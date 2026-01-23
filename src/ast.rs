@@ -2,7 +2,7 @@
 
 #[derive(Debug)]
 pub struct CompUnit {
-    pub func_def: FuncDef
+    pub func_def: FuncDef,
 }
 
 #[derive(Debug)]
@@ -16,13 +16,12 @@ pub struct FuncDef {
 pub enum FuncType {
     Int,
 }
-
 #[derive(Debug)]
 pub struct Block {
-    pub stmt: Stmt
+    pub stmt: Stmt,
 }
 
 #[derive(Debug)]
 pub struct Stmt {
-    pub num: i32
+    pub num: i32,
 }
