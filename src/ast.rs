@@ -25,3 +25,10 @@ pub struct Block {
 pub struct Stmt {
     pub num: i32,
 }
+
+/// Check if the AST is valid
+pub fn check_ast(ast: &CompUnit) {
+    if ast.func_def.ident != "main" {
+        panic!("The function name must be 'main'");
+    }
+}
