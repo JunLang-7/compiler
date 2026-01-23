@@ -1,7 +1,7 @@
 mod ast;
 mod ir;
 
-use crate::ir::generate_koopa;
+use crate::ir::{GenerateAsm, generate_koopa};
 use koopa::back::KoopaGenerator;
 use lalrpop_util::lalrpop_mod;
 use std::env::args;
@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     // 解析命令行参数
     let mut args = args();
     args.next();
-    let _mode = args.next().unwrap();
+    let mode = args.next().unwrap();
     let input = args.next().unwrap();
     args.next();
     let output = args.next().unwrap();
@@ -36,8 +36,19 @@ fn main() -> Result<()> {
 
     // 使用 Koopa 前端将 AST 转换为中间表示
     let program = generate_koopa(&ast);
-    // 将中间表示输出到文件
-    KoopaGenerator::new(File::create(output)?).generate_on(&program)?;
+    
+    // 输出结果到文件
+    match mode.as_str() {
+        "-koopa" => {
+            // 将中间表示输出
+            KoopaGenerator::new(File::create(output)?).generate_on(&program)?;
+        }
+        "-riscv" => {
+            // 将 Koopa IR 转换为 RISC-V 汇编并输出
+            program.generate(&mut File::create(output)?)?;
+        }
+        _ => panic!("Unknown mode: {}", mode),
+    }
 
     Ok(())
 }
