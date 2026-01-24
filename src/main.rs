@@ -1,5 +1,5 @@
-mod ast;
 mod asm;
+mod ast;
 mod ir;
 
 use crate::asm::GenerateAsm;

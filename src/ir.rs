@@ -1,6 +1,6 @@
 use crate::ast::{self, Exp, UnaryExp, UnaryOp};
-use koopa::ir::{BasicBlock, BinaryOp, FunctionData, Program, Type, Value};
 use koopa::ir::builder_traits::*;
+use koopa::ir::{BasicBlock, BinaryOp, FunctionData, Program, Type, Value};
 
 /// Generate Koopa IR from the AST
 pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
@@ -54,12 +54,23 @@ pub fn generate_unary_exp(
             let zero = func_data.dfg_mut().new_value().integer(0);
             let result = match op {
                 UnaryOp::Plus => val,
-                UnaryOp::Minus => func_data.dfg_mut().new_value().binary(BinaryOp::Sub, zero, val),
-                UnaryOp::Not => func_data.dfg_mut().new_value().binary(BinaryOp::Eq, zero, val),
+                UnaryOp::Minus => func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(BinaryOp::Sub, zero, val),
+                UnaryOp::Not => func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(BinaryOp::Eq, zero, val),
             };
             // 如果不是加号操作符, 则需要将结果加入到基本块中
             if !matches!(op, UnaryOp::Plus) {
-                func_data.layout_mut().bb_mut(bb).insts_mut().push_key_back(result).expect("failed to push unary exp");
+                func_data
+                    .layout_mut()
+                    .bb_mut(bb)
+                    .insts_mut()
+                    .push_key_back(result)
+                    .expect("failed to push unary exp");
             }
             result
         }
