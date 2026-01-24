@@ -57,14 +57,19 @@ fn generate_inst(
             writeln!(writer, "\tret")?;
         }
         ValueKind::Binary(bin) => {
-            let rt = get_reg(reg_idx);
-            *reg_idx += 1;
-            let rs = get_reg(reg_idx);
-            load_to_reg(func_data, bin.lhs(), &rs, writer, value_map)?;
-            *reg_idx += 1;
-            let rd = get_reg(reg_idx);
-            load_to_reg(func_data, bin.rhs(), &rd, writer, value_map)?;
-            *reg_idx += 1;
+            // 获取操作数的寄存器
+            let rs = get_operand_reg(func_data, bin.lhs(), writer, value_map, reg_idx)?;
+            let rd = get_operand_reg(func_data, bin.rhs(), writer, value_map, reg_idx)?;
+            let rt = if rs != "x0" {
+                rs.clone()
+            } else if rd != "x0" {
+                rd.clone()
+            } else {
+                let reg = get_reg(reg_idx);
+                *reg_idx += 1;
+                reg
+            };
+
             match bin.op() {
                 BinaryOp::Sub => {
                     writeln!(writer, "\tsub {}, {}, {}", rt, rs, rd)?;
@@ -88,7 +93,7 @@ fn load_to_reg(
     val: Value,
     dst_reg: &str,
     writer: &mut dyn Write,
-    value_map: &mut HashMap<Value, String>,
+    value_map: &HashMap<Value, String>,
 ) -> Result<()> {
     let val_data = func_data.dfg().value(val);
     match val_data.kind() {
@@ -106,6 +111,33 @@ fn load_to_reg(
         }
     }
     Ok(())
+}
+
+/// Get the register for an operand value
+fn get_operand_reg(
+    func_data: &FunctionData,
+    val: Value,
+    writer: &mut dyn Write,
+    value_map: &HashMap<Value, String>,
+    reg_idx: &mut usize,
+) -> Result<String> {
+    // Check if the value is already mapped to a register
+    if let Some(reg) = value_map.get(&val) {
+        return Ok(reg.clone());
+    }
+
+    let val_data = func_data.dfg().value(val);
+    // If the value is an integer zero, return x0 directly
+    if let ValueKind::Integer(int) = val_data.kind() {
+        if int.value() == 0 {
+            return Ok("x0".to_string());
+        }
+    }
+    // Otherwise, allocate a new register and load the value into it
+    let reg = get_reg(reg_idx);
+    *reg_idx += 1;
+    load_to_reg(func_data, val, &reg, writer, value_map)?;
+    Ok(reg)
 }
 
 /// Get a register name based on the index
