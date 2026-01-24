@@ -23,7 +23,31 @@ pub struct Block {
 
 #[derive(Debug)]
 pub struct Stmt {
-    pub num: i32,
+    pub exp: Exp,
+}
+
+#[derive(Debug)]
+pub struct Exp {
+    pub unary_exp: UnaryExp,
+}
+
+#[derive(Debug)]
+pub enum UnaryExp {
+    PrimaryExp(PrimaryExp),
+    UnaryOp { op: UnaryOp, exp: Box<UnaryExp> },
+}
+
+#[derive(Debug)]
+pub enum PrimaryExp {
+    Exp(Box<Exp>),
+    Number(i32),
+}
+
+#[derive(Debug)]
+pub enum UnaryOp {
+    Plus,
+    Minus,
+    Not,
 }
 
 /// Check if the AST is valid

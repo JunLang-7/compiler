@@ -1,8 +1,10 @@
 mod ast;
+mod asm;
 mod ir;
 
+use crate::asm::GenerateAsm;
 use crate::ast::check_ast;
-use crate::ir::{GenerateAsm, generate_koopa};
+use crate::ir::generate_koopa;
 use koopa::back::KoopaGenerator;
 use lalrpop_util::lalrpop_mod;
 use std::env::args;

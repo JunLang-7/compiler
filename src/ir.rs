@@ -1,8 +1,6 @@
-use std::io::{Result, Write};
-
-use crate::ast;
-use koopa::ir::{FunctionData, Program, Type};
-use koopa::ir::{Value, ValueKind, builder_traits::*};
+use crate::ast::{self, Exp, UnaryExp, UnaryOp};
+use koopa::ir::{BasicBlock, BinaryOp, FunctionData, Program, Type, Value};
+use koopa::ir::builder_traits::*;
 
 /// Generate Koopa IR from the AST
 pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
@@ -24,10 +22,10 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
         .push_key_back(entry)
         .expect("fail to push entry bb");
 
+    // 在基本块中添加指令
+    let ret_val = generate_exp(func_data, entry, &ast.func_def.block.stmt.exp);
     // 在基本块中添加返回语句
-    let ret_val = ast.func_def.block.stmt.num;
-    let val = func_data.dfg_mut().new_value().integer(ret_val);
-    let ret = func_data.dfg_mut().new_value().ret(Some(val));
+    let ret = func_data.dfg_mut().new_value().ret(Some(ret_val));
     // 将返回语句添加到基本块中
     func_data
         .layout_mut()
@@ -38,56 +36,44 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
     program
 }
 
-/// A trait to generate asm file base on Koopa IR
-pub trait GenerateAsm {
-    fn generate(&self, writer: &mut dyn Write) -> Result<()>;
+/// Generate Koopa IR for an expression
+pub fn generate_exp(func_data: &mut FunctionData, bb: BasicBlock, exp: &Exp) -> Value {
+    generate_unary_exp(func_data, bb, &exp.unary_exp)
 }
 
-impl GenerateAsm for Program {
-    fn generate(&self, writer: &mut dyn Write) -> Result<()> {
-        writeln!(writer, "  .text")?;
-        for &func in self.func_layout() {
-            self.func(func).generate(writer)?;
-        }
-        Ok(())
-    }
-}
-
-impl GenerateAsm for FunctionData {
-    fn generate(&self, writer: &mut dyn Write) -> Result<()> {
-        let name = self.name().trim_start_matches('@');
-        writeln!(writer, "\t.global {}", name)?;
-        writeln!(writer, "{}:", name)?;
-
-        for (&_bb, node) in self.layout().bbs() {
-            // 遍历指令列表
-            for &inst in node.insts().keys() {
-                generate_inst(self, inst, writer)?;
+/// Generate Koopa IR for a unary expression
+pub fn generate_unary_exp(
+    func_data: &mut FunctionData,
+    bb: BasicBlock,
+    unary_exp: &ast::UnaryExp,
+) -> Value {
+    match unary_exp {
+        UnaryExp::PrimaryExp(primary_exp) => generate_primary_exp(func_data, bb, primary_exp),
+        UnaryExp::UnaryOp { op, exp } => {
+            let val = generate_unary_exp(func_data, bb, exp);
+            let zero = func_data.dfg_mut().new_value().integer(0);
+            let result = match op {
+                UnaryOp::Plus => val,
+                UnaryOp::Minus => func_data.dfg_mut().new_value().binary(BinaryOp::Sub, zero, val),
+                UnaryOp::Not => func_data.dfg_mut().new_value().binary(BinaryOp::Eq, zero, val),
+            };
+            // 如果不是加号操作符, 则需要将结果加入到基本块中
+            if !matches!(op, UnaryOp::Plus) {
+                func_data.layout_mut().bb_mut(bb).insts_mut().push_key_back(result).expect("failed to push unary exp");
             }
+            result
         }
-        writeln!(writer, "\tret")?;
-        Ok(())
     }
 }
 
-/// generate asm based on each instruction
-fn generate_inst(func_data: &FunctionData, inst: Value, writer: &mut dyn Write) -> Result<()> {
-    let value_data = func_data.dfg().value(inst);
-    match value_data.kind() {
-        ValueKind::Integer(_int) => {}
-        ValueKind::Return(ret) => {
-            if let Some(ret_val) = ret.value() {
-                let ret_val_data = func_data.dfg().value(ret_val);
-                match ret_val_data.kind() {
-                    ValueKind::Integer(int) => {
-                        // generate li a0, int
-                        writeln!(writer, " \tli a0, {}", int.value())?;
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
-        _ => unreachable!(),
+/// Generate Koopa IR for a primary expression
+pub fn generate_primary_exp(
+    func_data: &mut FunctionData,
+    bb: BasicBlock,
+    primary_exp: &ast::PrimaryExp,
+) -> Value {
+    match primary_exp {
+        ast::PrimaryExp::Exp(exp) => generate_exp(func_data, bb, exp),
+        ast::PrimaryExp::Number(num) => func_data.dfg_mut().new_value().integer(*num),
     }
-    Ok(())
 }
