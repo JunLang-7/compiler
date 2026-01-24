@@ -71,15 +71,25 @@ fn generate_inst(
             };
 
             match bin.op() {
+                BinaryOp::Add => writeln!(writer, "\tadd {}, {}, {}", rt, rs, rd)?,
                 BinaryOp::Sub => writeln!(writer, "\tsub {}, {}, {}", rt, rs, rd)?,
+                BinaryOp::Mul => writeln!(writer, "\tmul {}, {}, {}", rt, rs, rd)?,
+                BinaryOp::Div => writeln!(writer, "\tdiv {}, {}, {}", rt, rs, rd)?,
+                BinaryOp::Mod => writeln!(writer, "\trem {}, {}, {}", rt, rs, rd)?,
+                BinaryOp::Lt => writeln!(writer, "\tslt {}, {}, {}", rt, rs, rd)?,
+                BinaryOp::Gt => writeln!(writer, "\tsgt {}, {}, {}", rt, rs, rd)?,
+                BinaryOp::Le => writeln!(writer, "\tsgt {}, {}, {}", rt, rd, rs)?,
+                BinaryOp::Ge => writeln!(writer, "\tslt {}, {}, {}", rt, rd, rs)?,
+                BinaryOp::And => writeln!(writer, "\tand {}, {}, {}", rt, rs, rd)?,
+                BinaryOp::Or => writeln!(writer, "\tor {}, {}, {}", rt, rs, rd)?,
                 BinaryOp::Eq => {
                     writeln!(writer, "\txor {}, {}, {}", rt, rs, rd)?;
                     writeln!(writer, "\tseqz {}, {}", rt, rt)?;
                 }
-                BinaryOp::Add => writeln!(writer, "\tadd {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Mul => writeln!(writer, "\tmul {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Div => writeln!(writer, "\tdiv {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Mod => writeln!(writer, "\trem {}, {}, {}", rt, rs, rd)?,
+                BinaryOp::NotEq => {
+                    writeln!(writer, "\txor {}, {}, {}", rt, rs, rd)?;
+                    writeln!(writer, "\tsnez {}, {}", rt, rt)?;
+                }
                 _ => unreachable!(),
             }
             value_map.insert(inst, rt);

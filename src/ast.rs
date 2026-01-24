@@ -28,7 +28,7 @@ pub struct Stmt {
 
 #[derive(Debug)]
 pub struct Exp {
-    pub add_exp: AddExp,
+    pub lor_exp: LOrExp,
 }
 
 #[derive(Debug)]
@@ -81,6 +81,62 @@ pub enum MulOp {
 pub enum AddOp {
     Plus,
     Minus,
+}
+
+#[derive(Debug)]
+pub enum RelExp {
+    AddExp(AddExp),
+    RelOp {
+        lhs: Box<RelExp>,
+        op: RelOp,
+        rhs: Box<AddExp>,
+    },
+}
+
+#[derive(Debug)]
+pub enum EqExp {
+    RelExp(RelExp),
+    EqOp {
+        lhs: Box<EqExp>,
+        op: EqOp,
+        rhs: Box<RelExp>,
+    },
+}
+
+#[derive(Debug)]
+pub enum LAndExp {
+    EqExp(EqExp),
+    LAndOp { lhs: Box<LAndExp>, rhs: Box<EqExp> },
+}
+
+#[derive(Debug)]
+pub enum LOrExp {
+    LAndExp(LAndExp),
+    LOrOp { lhs: Box<LOrExp>, rhs: Box<LAndExp> },
+}
+
+#[derive(Debug)]
+pub enum RelOp {
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
+#[derive(Debug)]
+pub enum EqOp {
+    Eq,
+    Ne,
+}
+
+#[derive(Debug)]
+pub enum LAndOp {
+    And,
+}
+
+#[derive(Debug)]
+pub enum LOrOp {
+    Or,
 }
 
 /// Check if the AST is valid

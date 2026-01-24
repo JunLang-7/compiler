@@ -1,4 +1,7 @@
-use crate::ast::{self, AddExp, AddOp, Exp, MulExp, MulOp, UnaryExp, UnaryOp};
+use crate::ast::{
+    self, AddExp, AddOp, EqExp, EqOp, Exp, LAndExp, LOrExp, MulExp, MulOp, RelExp, RelOp, UnaryExp,
+    UnaryOp,
+};
 use koopa::ir::builder_traits::*;
 use koopa::ir::{BasicBlock, BinaryOp, FunctionData, Program, Type, Value};
 
@@ -38,7 +41,7 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
 
 /// Generate Koopa IR for an expression
 pub fn generate_exp(func_data: &mut FunctionData, bb: BasicBlock, exp: &Exp) -> Value {
-    generate_add_exp(func_data, bb, &exp.add_exp)
+    generate_lor_exp(func_data, bb, &exp.lor_exp)
 }
 
 /// Generate Koopa IR for a unary expression
@@ -162,6 +165,136 @@ pub fn generate_mul_exp(
                 .insts_mut()
                 .push_key_back(result)
                 .expect("failed to push mul exp");
+            result
+        }
+    }
+}
+
+/// Generate Koopa IR for a relational expression
+pub fn generate_rel_exp(func_data: &mut FunctionData, bb: BasicBlock, rel_exp: &RelExp) -> Value {
+    match rel_exp {
+        RelExp::AddExp(add_exp) => generate_add_exp(func_data, bb, add_exp),
+        RelExp::RelOp { lhs, op, rhs } => {
+            let lhs_val = generate_rel_exp(func_data, bb, lhs);
+            let rhs_val = generate_add_exp(func_data, bb, rhs);
+            let result = match op {
+                RelOp::Lt => func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(BinaryOp::Lt, lhs_val, rhs_val),
+                RelOp::Gt => func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(BinaryOp::Gt, lhs_val, rhs_val),
+                RelOp::Le => func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(BinaryOp::Le, lhs_val, rhs_val),
+                RelOp::Ge => func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(BinaryOp::Ge, lhs_val, rhs_val),
+            };
+            func_data
+                .layout_mut()
+                .bb_mut(bb)
+                .insts_mut()
+                .push_key_back(result)
+                .expect("failed to push rel exp");
+            result
+        }
+    }
+}
+
+/// Generate Koopa IR for an equality expression
+pub fn generate_eq_exp(func_data: &mut FunctionData, bb: BasicBlock, eq_exp: &ast::EqExp) -> Value {
+    match eq_exp {
+        EqExp::RelExp(rel_exp) => generate_rel_exp(func_data, bb, rel_exp),
+        EqExp::EqOp { lhs, op, rhs } => {
+            let lhs_val = generate_eq_exp(func_data, bb, lhs);
+            let rhs_val = generate_rel_exp(func_data, bb, rhs);
+            let result = match op {
+                EqOp::Eq => func_data
+                    .dfg_mut()
+                    .new_value()
+                    .binary(BinaryOp::Eq, lhs_val, rhs_val),
+                EqOp::Ne => {
+                    func_data
+                        .dfg_mut()
+                        .new_value()
+                        .binary(BinaryOp::NotEq, lhs_val, rhs_val)
+                }
+            };
+            func_data
+                .layout_mut()
+                .bb_mut(bb)
+                .insts_mut()
+                .push_key_back(result)
+                .expect("failed to push eq exp");
+            result
+        }
+    }
+}
+
+/// Generate Koopa IR for a logical AND expression
+pub fn generate_land_exp(
+    func_data: &mut FunctionData,
+    bb: BasicBlock,
+    land_exp: &LAndExp,
+) -> Value {
+    match land_exp {
+        LAndExp::EqExp(eq_exp) => generate_eq_exp(func_data, bb, eq_exp),
+        LAndExp::LAndOp { lhs, rhs } => {
+            let lhs_val = generate_land_exp(func_data, bb, lhs);
+            let rhs_val = generate_eq_exp(func_data, bb, rhs);
+            let zero = func_data.dfg_mut().new_value().integer(0);
+            let lhs_ne0 = func_data
+                .dfg_mut()
+                .new_value()
+                .binary(BinaryOp::NotEq, lhs_val, zero);
+            let rhs_ne0 = func_data
+                .dfg_mut()
+                .new_value()
+                .binary(BinaryOp::NotEq, rhs_val, zero);
+            let result = func_data
+                .dfg_mut()
+                .new_value()
+                .binary(BinaryOp::And, lhs_ne0, rhs_ne0);
+            func_data
+                .layout_mut()
+                .bb_mut(bb)
+                .insts_mut()
+                .extend([lhs_ne0, rhs_ne0, result]);
+            result
+        }
+    }
+}
+
+/// Generate Koopa IR for a logical OR expression
+pub fn generate_lor_exp(func_data: &mut FunctionData, bb: BasicBlock, lor_exp: &LOrExp) -> Value {
+    match lor_exp {
+        LOrExp::LAndExp(land_exp) => generate_land_exp(func_data, bb, land_exp),
+        LOrExp::LOrOp { lhs, rhs } => {
+            let lhs_val = generate_lor_exp(func_data, bb, lhs);
+            let rhs_val = generate_land_exp(func_data, bb, rhs);
+            let zero = func_data.dfg_mut().new_value().integer(0);
+            let lhs_ne0 = func_data
+                .dfg_mut()
+                .new_value()
+                .binary(BinaryOp::NotEq, lhs_val, zero);
+            let rhs_ne0 = func_data
+                .dfg_mut()
+                .new_value()
+                .binary(BinaryOp::NotEq, rhs_val, zero);
+            let result = func_data
+                .dfg_mut()
+                .new_value()
+                .binary(BinaryOp::Or, lhs_ne0, rhs_ne0);
+            func_data
+                .layout_mut()
+                .bb_mut(bb)
+                .insts_mut()
+                .extend([lhs_ne0, rhs_ne0, result]);
             result
         }
     }

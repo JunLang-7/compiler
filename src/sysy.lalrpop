@@ -28,7 +28,7 @@ Block: Block = "{" <stmt: Stmt> "}" => Block { <> };
 
 Stmt: Stmt = "return" <exp: Exp>";" => Stmt { <> };
 
-Exp: Exp = <add_exp: AddExp> => Exp { <> };
+Exp: Exp = <lor_exp: LOrExp> => Exp { <> };
 
 PrimaryExp: PrimaryExp = {
   "(" <exp: Exp> ")" => PrimaryExp::Exp(Box::new(exp)),
@@ -76,6 +76,55 @@ AddOp: AddOp = {
   "+" => AddOp::Plus,
   "-" => AddOp::Minus,
 }
+
+RelExp: RelExp = {
+  <add_exp: AddExp> => RelExp::AddExp(<>),
+  <rel_exp: RelExp> <rel_op: RelOp> <add_exp: AddExp> => RelExp::RelOp {
+    lhs: Box::new(rel_exp),
+    op: rel_op,
+    rhs: Box::new(add_exp),
+  },
+}
+
+EqExp: EqExp = {
+  <rel_exp: RelExp> => EqExp::RelExp(<>),
+  <eq_exp: EqExp> <eq_op: EqOp> <rel_exp: RelExp> => EqExp::EqOp {
+    lhs: Box::new(eq_exp),
+    op: eq_op,
+    rhs: Box::new(rel_exp),
+  },
+}
+
+LAndExp: LAndExp = {
+  <eq_exp: EqExp> => LAndExp::EqExp(<>),
+  <land_exp: LAndExp> <land_op: LAndOp> <eq_exp: EqExp> => LAndExp::LAndOp {
+    lhs: Box::new(land_exp),
+    rhs: Box::new(eq_exp),
+  },
+}
+
+LOrExp: LOrExp = {
+  <land_exp: LAndExp> => LOrExp::LAndExp(<>),
+  <lor_exp: LOrExp> <lor_op: LOrOp> <land_exp: LAndExp> => LOrExp::LOrOp {
+    lhs: Box::new(lor_exp),
+    rhs: Box::new(land_exp),
+  },
+}
+
+RelOp: RelOp = {
+  "<" => RelOp::Lt,
+  ">" => RelOp::Gt,
+  "<=" => RelOp::Le,
+  ">=" => RelOp::Ge,
+}
+
+EqOp: EqOp = {
+  "==" => EqOp::Eq,
+  "!=" => EqOp::Ne,
+}
+
+LAndOp: LAndOp = "&&" => LAndOp::And;
+LOrOp: LOrOp = "||" => LOrOp::Or;
 
 // 如果匹配到标识符, 就返回这个字符串
 // 一对尖括号在此处指代的是正则表达式匹配到的字符串 (&str)
