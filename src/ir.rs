@@ -1,4 +1,4 @@
-use crate::ast::{self, Exp, UnaryExp, UnaryOp};
+use crate::ast::{self, AddExp, AddOp, Exp, MulExp, MulOp, UnaryExp, UnaryOp};
 use koopa::ir::builder_traits::*;
 use koopa::ir::{BasicBlock, BinaryOp, FunctionData, Program, Type, Value};
 
@@ -38,7 +38,7 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
 
 /// Generate Koopa IR for an expression
 pub fn generate_exp(func_data: &mut FunctionData, bb: BasicBlock, exp: &Exp) -> Value {
-    generate_unary_exp(func_data, bb, &exp.unary_exp)
+    generate_add_exp(func_data, bb, &exp.add_exp)
 }
 
 /// Generate Koopa IR for a unary expression
@@ -86,5 +86,83 @@ pub fn generate_primary_exp(
     match primary_exp {
         ast::PrimaryExp::Exp(exp) => generate_exp(func_data, bb, exp),
         ast::PrimaryExp::Number(num) => func_data.dfg_mut().new_value().integer(*num),
+    }
+}
+
+/// Generate Koopa IR for an additive expression
+pub fn generate_add_exp(
+    func_data: &mut FunctionData,
+    bb: BasicBlock,
+    add_exp: &ast::AddExp,
+) -> Value {
+    match add_exp {
+        AddExp::MulExp(mul_exp) => generate_mul_exp(func_data, bb, mul_exp),
+        AddExp::AddOp { lhs, op, rhs } => {
+            let lhs_val = generate_add_exp(func_data, bb, lhs);
+            let rhs_val = generate_mul_exp(func_data, bb, rhs);
+            let result = match op {
+                AddOp::Plus => {
+                    func_data
+                        .dfg_mut()
+                        .new_value()
+                        .binary(BinaryOp::Add, lhs_val, rhs_val)
+                }
+                AddOp::Minus => {
+                    func_data
+                        .dfg_mut()
+                        .new_value()
+                        .binary(BinaryOp::Sub, lhs_val, rhs_val)
+                }
+            };
+            func_data
+                .layout_mut()
+                .bb_mut(bb)
+                .insts_mut()
+                .push_key_back(result)
+                .expect("failed to push add exp");
+            result
+        }
+    }
+}
+
+/// Generate Koopa IR for a multiplicative expression
+pub fn generate_mul_exp(
+    func_data: &mut FunctionData,
+    bb: BasicBlock,
+    mul_exp: &ast::MulExp,
+) -> Value {
+    match mul_exp {
+        MulExp::UnaryExp(unary_exp) => generate_unary_exp(func_data, bb, unary_exp),
+        MulExp::MulOp { lhs, op, rhs } => {
+            let lhs_val = generate_mul_exp(func_data, bb, lhs);
+            let rhs_val = generate_unary_exp(func_data, bb, rhs);
+            let result = match op {
+                MulOp::Mul => {
+                    func_data
+                        .dfg_mut()
+                        .new_value()
+                        .binary(BinaryOp::Mul, lhs_val, rhs_val)
+                }
+                MulOp::Div => {
+                    func_data
+                        .dfg_mut()
+                        .new_value()
+                        .binary(BinaryOp::Div, lhs_val, rhs_val)
+                }
+                MulOp::Mod => {
+                    func_data
+                        .dfg_mut()
+                        .new_value()
+                        .binary(BinaryOp::Mod, lhs_val, rhs_val)
+                }
+            };
+            func_data
+                .layout_mut()
+                .bb_mut(bb)
+                .insts_mut()
+                .push_key_back(result)
+                .expect("failed to push mul exp");
+            result
+        }
     }
 }

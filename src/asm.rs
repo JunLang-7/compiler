@@ -71,13 +71,15 @@ fn generate_inst(
             };
 
             match bin.op() {
-                BinaryOp::Sub => {
-                    writeln!(writer, "\tsub {}, {}, {}", rt, rs, rd)?;
-                }
+                BinaryOp::Sub => writeln!(writer, "\tsub {}, {}, {}", rt, rs, rd)?,
                 BinaryOp::Eq => {
                     writeln!(writer, "\txor {}, {}, {}", rt, rs, rd)?;
                     writeln!(writer, "\tseqz {}, {}", rt, rt)?;
                 }
+                BinaryOp::Add => writeln!(writer, "\tadd {}, {}, {}", rt, rs, rd)?,
+                BinaryOp::Mul => writeln!(writer, "\tmul {}, {}, {}", rt, rs, rd)?,
+                BinaryOp::Div => writeln!(writer, "\tdiv {}, {}, {}", rt, rs, rd)?,
+                BinaryOp::Mod => writeln!(writer, "\trem {}, {}, {}", rt, rs, rd)?,
                 _ => unreachable!(),
             }
             value_map.insert(inst, rt);

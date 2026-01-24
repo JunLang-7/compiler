@@ -28,7 +28,7 @@ pub struct Stmt {
 
 #[derive(Debug)]
 pub struct Exp {
-    pub unary_exp: UnaryExp,
+    pub add_exp: AddExp,
 }
 
 #[derive(Debug)]
@@ -48,6 +48,39 @@ pub enum UnaryOp {
     Plus,
     Minus,
     Not,
+}
+
+#[derive(Debug)]
+pub enum AddExp {
+    MulExp(MulExp),
+    AddOp {
+        lhs: Box<AddExp>,
+        op: AddOp,
+        rhs: Box<MulExp>,
+    },
+}
+
+#[derive(Debug)]
+pub enum MulExp {
+    UnaryExp(UnaryExp),
+    MulOp {
+        lhs: Box<MulExp>,
+        op: MulOp,
+        rhs: Box<UnaryExp>,
+    },
+}
+
+#[derive(Debug)]
+pub enum MulOp {
+    Mul,
+    Div,
+    Mod,
+}
+
+#[derive(Debug)]
+pub enum AddOp {
+    Plus,
+    Minus,
 }
 
 /// Check if the AST is valid

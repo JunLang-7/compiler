@@ -28,7 +28,7 @@ Block: Block = "{" <stmt: Stmt> "}" => Block { <> };
 
 Stmt: Stmt = "return" <exp: Exp>";" => Stmt { <> };
 
-Exp: Exp = <unary_exp: UnaryExp> => Exp { <> };
+Exp: Exp = <add_exp: AddExp> => Exp { <> };
 
 PrimaryExp: PrimaryExp = {
   "(" <exp: Exp> ")" => PrimaryExp::Exp(Box::new(exp)),
@@ -46,6 +46,35 @@ UnaryOp: UnaryOp = {
   "+" => UnaryOp::Plus,
   "-" => UnaryOp::Minus,
   "!" => UnaryOp::Not,
+}
+
+MulExp: MulExp = {
+  <unary_exp: UnaryExp> => MulExp::UnaryExp(<>),
+  <mul_exp: MulExp> <mul_op: MulOp> <unary_exp: UnaryExp> => MulExp::MulOp {
+    lhs: Box::new(mul_exp),
+    op: mul_op,
+    rhs: Box::new(unary_exp),
+  },
+}
+
+AddExp: AddExp = {
+  <mul_exp: MulExp> => AddExp::MulExp(<>),
+  <add_exp: AddExp> <add_op: AddOp> <mul_exp: MulExp> => AddExp::AddOp {
+    lhs: Box::new(add_exp),
+    op: add_op,
+    rhs: Box::new(mul_exp),
+  },
+}
+
+MulOp: MulOp = {
+  "*" => MulOp::Mul,
+  "/" => MulOp::Div,
+  "%" => MulOp::Mod,
+}
+
+AddOp: AddOp = {
+  "+" => AddOp::Plus,
+  "-" => AddOp::Minus,
 }
 
 // 如果匹配到标识符, 就返回这个字符串
