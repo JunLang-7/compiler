@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use crate::ir::Symbol;
+
 #[derive(Debug)]
 pub struct CompUnit {
     pub func_def: FuncDef,
@@ -30,8 +32,9 @@ pub enum BlockItem {
 }
 
 #[derive(Debug)]
-pub struct Stmt {
-    pub exp: Exp,
+pub enum Stmt {
+    Return(Exp),
+    LValAssign { lval: LVal, exp: Exp },
 }
 
 #[derive(Debug)]
@@ -40,7 +43,7 @@ pub struct Exp {
 }
 
 impl Exp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, i32>) -> i32 {
+    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
         match &self.lor_exp {
             LOrExp::LAndExp(land_exp) => land_exp.evaluate(symbol_table),
             LOrExp::LOrOp { lhs, rhs } => {
@@ -63,7 +66,7 @@ pub enum UnaryExp {
 }
 
 impl UnaryExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, i32>) -> i32 {
+    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
         match &self {
             UnaryExp::PrimaryExp(primary_exp) => primary_exp.evaluate(symbol_table),
             UnaryExp::UnaryOp { op, exp } => {
@@ -92,13 +95,19 @@ pub enum PrimaryExp {
 }
 
 impl PrimaryExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, i32>) -> i32 {
+    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
         match &self {
             PrimaryExp::Exp(exp) => exp.evaluate(symbol_table),
             PrimaryExp::Number(num) => *num,
             PrimaryExp::LVal(lval) => {
                 if let Some(val) = symbol_table.get(&lval.ident) {
-                    *val
+                    match *val {
+                        Symbol::Const(val) => val,
+                        Symbol::Var(_) => panic!(
+                            "Error: Variable '{}' cannot be used in a constant expression.",
+                            lval.ident
+                        ),
+                    }
                 } else {
                     panic!("Undefined variable: {}", lval.ident);
                 }
@@ -125,7 +134,7 @@ pub enum AddExp {
 }
 
 impl AddExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, i32>) -> i32 {
+    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
         match &self {
             AddExp::MulExp(mul_exp) => mul_exp.evaluate(symbol_table),
             AddExp::AddOp { lhs, op, rhs } => {
@@ -151,7 +160,7 @@ pub enum MulExp {
 }
 
 impl MulExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, i32>) -> i32 {
+    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
         match &self {
             MulExp::UnaryExp(unary_exp) => unary_exp.evaluate(symbol_table),
             MulExp::MulOp { lhs, op, rhs } => {
@@ -191,7 +200,7 @@ pub enum RelExp {
 }
 
 impl RelExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, i32>) -> i32 {
+    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
         match &self {
             RelExp::AddExp(add_exp) => add_exp.evaluate(symbol_table),
             RelExp::RelOp { lhs, op, rhs } => {
@@ -243,7 +252,7 @@ pub enum EqExp {
 }
 
 impl EqExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, i32>) -> i32 {
+    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
         match &self {
             EqExp::RelExp(rel_exp) => rel_exp.evaluate(symbol_table),
             EqExp::EqOp { lhs, op, rhs } => {
@@ -277,7 +286,7 @@ pub enum LAndExp {
 }
 
 impl LAndExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, i32>) -> i32 {
+    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
         match &self {
             LAndExp::EqExp(eq_exp) => eq_exp.evaluate(symbol_table),
             LAndExp::LAndOp { lhs, rhs } => {
@@ -300,7 +309,7 @@ pub enum LOrExp {
 }
 
 impl LOrExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, i32>) -> i32 {
+    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
         match &self {
             LOrExp::LAndExp(land_exp) => land_exp.evaluate(symbol_table),
             LOrExp::LOrOp { lhs, rhs } => {
@@ -343,6 +352,7 @@ pub enum LOrOp {
 #[derive(Debug)]
 pub enum Decl {
     ConstDecl(ConstDecl),
+    VarDecl(VarDecl),
 }
 
 #[derive(Debug)]
@@ -375,6 +385,23 @@ pub struct ConstExp {
 #[derive(Debug)]
 pub struct LVal {
     pub ident: String,
+}
+
+#[derive(Debug)]
+pub struct VarDecl {
+    pub b_type: BType,
+    pub var_defs: Vec<VarDef>,
+}
+
+#[derive(Debug)]
+pub struct VarDef {
+    pub ident: String,
+    pub init_val: Option<InitVal>,
+}
+
+#[derive(Debug)]
+pub struct InitVal {
+    pub exp: Exp,
 }
 
 /// Check if the AST is valid

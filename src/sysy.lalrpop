@@ -31,7 +31,10 @@ BlockItem: BlockItem = {
   <stmt: Stmt> => BlockItem::Stmt(<>),
 }
 
-Stmt: Stmt = "return" <exp: Exp>";" => Stmt { <> };
+Stmt: Stmt = {
+  "return" <exp: Exp>";" => Stmt::Return(exp),
+  <lval: LVal> "=" <exp: Exp> ";" => Stmt::LValAssign{ lval, exp },
+}
 
 Exp: Exp = <lor_exp: LOrExp> => Exp { <> };
 
@@ -132,7 +135,10 @@ EqOp: EqOp = {
 LAndOp: LAndOp = "&&" => LAndOp::And;
 LOrOp: LOrOp = "||" => LOrOp::Or;
 
-Decl: Decl = <const_decl: ConstDecl> => Decl::ConstDecl(<>);
+Decl: Decl ={
+  <const_decl: ConstDecl> => Decl::ConstDecl(<>),
+  <var_decl: VarDecl> => Decl::VarDecl(<>),
+}
 
 ConstDecl: ConstDecl = "const" <b_type: BType> <const_def: ConstDef> <mut const_defs: ("," <ConstDef>)*> ";" => {
   const_defs.insert(0, const_def);
@@ -148,6 +154,18 @@ ConstInitVal: ConstInitVal = <const_exp: ConstExp> => ConstInitVal { <> };
 LVal: LVal = <ident: Ident> => LVal { <> };
 
 ConstExp: ConstExp = <exp: Exp> => ConstExp { <> };
+
+VarDecl: VarDecl = <b_type: BType> <var_def: VarDef> <mut var_defs: ("," <VarDef>)*> ";" => {
+  var_defs.insert(0, var_def);
+  VarDecl { b_type, var_defs }
+};
+
+VarDef: VarDef = {
+  <ident: Ident> => VarDef { ident, init_val: None },
+  <ident: Ident> "=" <init_val: InitVal> => VarDef { ident, init_val: Some(init_val) },
+}
+
+InitVal: InitVal = <exp: Exp> => InitVal { <> };
 
 // 如果匹配到标识符, 就返回这个字符串
 // 一对尖括号在此处指代的是正则表达式匹配到的字符串 (&str)
