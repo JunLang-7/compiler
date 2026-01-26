@@ -1,9 +1,5 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
-
-use crate::ir::Symbol;
-
 #[derive(Debug)]
 pub struct CompUnit {
     pub func_def: FuncDef,
@@ -42,49 +38,10 @@ pub struct Exp {
     pub lor_exp: LOrExp,
 }
 
-impl Exp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
-        match &self.lor_exp {
-            LOrExp::LAndExp(land_exp) => land_exp.evaluate(symbol_table),
-            LOrExp::LOrOp { lhs, rhs } => {
-                let left = lhs.evaluate(symbol_table);
-                if left != 0 {
-                    1
-                } else {
-                    let right = rhs.evaluate(symbol_table);
-                    if right != 0 { 1 } else { 0 }
-                }
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum UnaryExp {
     PrimaryExp(PrimaryExp),
     UnaryOp { op: UnaryOp, exp: Box<UnaryExp> },
-}
-
-impl UnaryExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
-        match &self {
-            UnaryExp::PrimaryExp(primary_exp) => primary_exp.evaluate(symbol_table),
-            UnaryExp::UnaryOp { op, exp } => {
-                let val = exp.evaluate(symbol_table);
-                match op {
-                    UnaryOp::Plus => val,
-                    UnaryOp::Minus => -val,
-                    UnaryOp::Not => {
-                        if val == 0 {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -92,28 +49,6 @@ pub enum PrimaryExp {
     Exp(Box<Exp>),
     Number(i32),
     LVal(Box<LVal>),
-}
-
-impl PrimaryExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
-        match &self {
-            PrimaryExp::Exp(exp) => exp.evaluate(symbol_table),
-            PrimaryExp::Number(num) => *num,
-            PrimaryExp::LVal(lval) => {
-                if let Some(val) = symbol_table.get(&lval.ident) {
-                    match *val {
-                        Symbol::Const(val) => val,
-                        Symbol::Var(_) => panic!(
-                            "Error: Variable '{}' cannot be used in a constant expression.",
-                            lval.ident
-                        ),
-                    }
-                } else {
-                    panic!("Undefined variable: {}", lval.ident);
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -133,22 +68,6 @@ pub enum AddExp {
     },
 }
 
-impl AddExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
-        match &self {
-            AddExp::MulExp(mul_exp) => mul_exp.evaluate(symbol_table),
-            AddExp::AddOp { lhs, op, rhs } => {
-                let left = lhs.evaluate(symbol_table);
-                let right = rhs.evaluate(symbol_table);
-                match op {
-                    AddOp::Plus => left + right,
-                    AddOp::Minus => left - right,
-                }
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum MulExp {
     UnaryExp(UnaryExp),
@@ -157,23 +76,6 @@ pub enum MulExp {
         op: MulOp,
         rhs: Box<UnaryExp>,
     },
-}
-
-impl MulExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
-        match &self {
-            MulExp::UnaryExp(unary_exp) => unary_exp.evaluate(symbol_table),
-            MulExp::MulOp { lhs, op, rhs } => {
-                let left = lhs.evaluate(symbol_table);
-                let right = rhs.evaluate(symbol_table);
-                match op {
-                    MulOp::Mul => left * right,
-                    MulOp::Div => left / right,
-                    MulOp::Mod => left % right,
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -199,48 +101,6 @@ pub enum RelExp {
     },
 }
 
-impl RelExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
-        match &self {
-            RelExp::AddExp(add_exp) => add_exp.evaluate(symbol_table),
-            RelExp::RelOp { lhs, op, rhs } => {
-                let left = lhs.evaluate(symbol_table);
-                let right = rhs.evaluate(symbol_table);
-                match op {
-                    RelOp::Lt => {
-                        if left < right {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                    RelOp::Gt => {
-                        if left > right {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                    RelOp::Le => {
-                        if left <= right {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                    RelOp::Ge => {
-                        if left >= right {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum EqExp {
     RelExp(RelExp),
@@ -251,78 +111,16 @@ pub enum EqExp {
     },
 }
 
-impl EqExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
-        match &self {
-            EqExp::RelExp(rel_exp) => rel_exp.evaluate(symbol_table),
-            EqExp::EqOp { lhs, op, rhs } => {
-                let left = lhs.evaluate(symbol_table);
-                let right = rhs.evaluate(symbol_table);
-                match op {
-                    EqOp::Eq => {
-                        if left == right {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                    EqOp::Ne => {
-                        if left != right {
-                            1
-                        } else {
-                            0
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum LAndExp {
     EqExp(EqExp),
     LAndOp { lhs: Box<LAndExp>, rhs: Box<EqExp> },
 }
 
-impl LAndExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
-        match &self {
-            LAndExp::EqExp(eq_exp) => eq_exp.evaluate(symbol_table),
-            LAndExp::LAndOp { lhs, rhs } => {
-                let left = lhs.evaluate(symbol_table);
-                if left == 0 {
-                    0
-                } else {
-                    let right = rhs.evaluate(symbol_table);
-                    if right != 0 { 1 } else { 0 }
-                }
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum LOrExp {
     LAndExp(LAndExp),
     LOrOp { lhs: Box<LOrExp>, rhs: Box<LAndExp> },
-}
-
-impl LOrExp {
-    pub fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
-        match &self {
-            LOrExp::LAndExp(land_exp) => land_exp.evaluate(symbol_table),
-            LOrExp::LOrOp { lhs, rhs } => {
-                let left = lhs.evaluate(symbol_table);
-                if left != 0 {
-                    1
-                } else {
-                    let right = rhs.evaluate(symbol_table);
-                    if right != 0 { 1 } else { 0 }
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
