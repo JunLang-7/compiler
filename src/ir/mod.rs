@@ -18,7 +18,34 @@ pub enum Symbol {
 /// Context for Koopa IR generation
 pub struct GenContext<'a> {
     func_data: &'a mut FunctionData,
-    symbol_table: HashMap<String, Symbol>,
+    scopes: Vec<HashMap<String, Symbol>>,
+}
+
+impl<'a> GenContext<'a> {
+    /// Enter a new scope
+    pub fn enter_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    /// Exit the current scope
+    pub fn exit_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    /// Insert a symbol into the current scope
+    pub fn insert_symbol(&mut self, ident: String, symbol: Symbol) {
+        self.scopes.last_mut().unwrap().insert(ident, symbol);
+    }
+
+    /// Lookup a symbol in the scopes
+    pub fn lookup_symbol(&self, ident: &str) -> Option<Symbol> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(symbol) = scope.get(ident) {
+                return Some(*symbol);
+            }
+        }
+        None
+    }
 }
 
 /// Generate Koopa IR from the AST
@@ -29,7 +56,7 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
     let func = program.new_func(func_data);
     let mut ctx = GenContext {
         func_data: program.func_mut(func),
-        symbol_table: HashMap::new(),
+        scopes: vec![HashMap::new()],
     };
 
     // 在函数中创建一个基本块(entry basic block)
@@ -69,10 +96,10 @@ pub fn generate_block(ctx: &mut GenContext, bb: BasicBlock, block: &Block) {
                             .expect("fail to push return value");
                     }
                     Stmt::LValAssign { lval, exp } => {
-                        let var = if let Some(symbol) = ctx.symbol_table.get(&lval.ident) {
+                        let var = if let Some(symbol) = ctx.lookup_symbol(&lval.ident) {
                             match symbol {
                                 Symbol::Const(_) => unreachable!(),
-                                Symbol::Var(var) => *var,
+                                Symbol::Var(var) => var,
                             }
                         } else {
                             panic!("Cannot assign a undefined variable!");
@@ -87,6 +114,18 @@ pub fn generate_block(ctx: &mut GenContext, bb: BasicBlock, block: &Block) {
                             .insts_mut()
                             .push_key_back(store)
                             .expect("failed to push store instruction");
+                    }
+                    Stmt::Block(blk) => {
+                        ctx.enter_scope();
+                        generate_block(ctx, bb, blk);
+                        ctx.exit_scope();
+                    }
+                    Stmt::Exp(opt_exp) => {
+                        if let Some(exp) = opt_exp {
+                            generate_exp(ctx, bb, exp);
+                        } else {
+                            // 空表达式语句，不做任何操作
+                        }
                     }
                 }
             }
@@ -103,9 +142,8 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) {
         Decl::ConstDecl(const_decl) => {
             for def in &const_decl.const_defs {
                 let exp = &def.const_init_val.const_exp.exp;
-                let value = exp.evaluate(&mut ctx.symbol_table);
-                ctx.symbol_table
-                    .insert(def.ident.clone(), Symbol::Const(value));
+                let value = exp.evaluate(&mut ctx.scopes.last_mut().unwrap());
+                ctx.insert_symbol(def.ident.clone(), Symbol::Const(value));
             }
         }
         Decl::VarDecl(var_decl) => {
@@ -118,8 +156,7 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) {
                     .insts_mut()
                     .push_key_back(alloc)
                     .expect("failed to add alloc instruction");
-                ctx.symbol_table
-                    .insert(def.ident.clone(), Symbol::Var(alloc));
+                ctx.insert_symbol(def.ident.clone(), Symbol::Var(alloc));
                 // 处理初始化值
                 if let Some(init_val) = &def.init_val {
                     let res = generate_exp(ctx, bb, &init_val.exp);

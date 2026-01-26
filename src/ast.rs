@@ -31,6 +31,8 @@ pub enum BlockItem {
 pub enum Stmt {
     Return(Exp),
     LValAssign { lval: LVal, exp: Exp },
+    Block(Block),
+    Exp(Option<Exp>),
 }
 
 #[derive(Debug)]

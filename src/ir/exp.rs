@@ -53,7 +53,7 @@ pub fn generate_primary_exp(
         PrimaryExp::Exp(exp) => generate_exp(ctx, bb, exp),
         PrimaryExp::Number(num) => ctx.func_data.dfg_mut().new_value().integer(*num),
         PrimaryExp::LVal(lval) => {
-            if let Some(&symbol) = ctx.symbol_table.get(&lval.ident) {
+            if let Some(symbol) = ctx.lookup_symbol(&lval.ident) {
                 match symbol {
                     Symbol::Const(val) => ctx.func_data.dfg_mut().new_value().integer(val),
                     Symbol::Var(val) => {

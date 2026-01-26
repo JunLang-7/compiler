@@ -34,6 +34,9 @@ BlockItem: BlockItem = {
 Stmt: Stmt = {
   "return" <exp: Exp>";" => Stmt::Return(exp),
   <lval: LVal> "=" <exp: Exp> ";" => Stmt::LValAssign{ lval, exp },
+  <block: Block> => Stmt::Block(<>),
+  <exp: Exp> ";" => Stmt::Exp(Some(<>)),
+  ";" => Stmt::Exp(None),
 }
 
 Exp: Exp = <lor_exp: LOrExp> => Exp { <> };
