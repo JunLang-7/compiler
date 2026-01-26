@@ -26,141 +26,151 @@ impl GenerateAsm for FunctionData {
         writeln!(writer, "\t.globl {}", name)?;
         writeln!(writer, "{}:", name)?;
 
-        let mut value_map: HashMap<Value, String> = HashMap::new();
-        let mut reg_idx = 0;
+        let mut asm_gen = AsmGen::new(writer, self);
+        asm_gen.generate()?;
 
-        for (&_bb, node) in self.layout().bbs() {
-            // 遍历指令列表
-            for &inst in node.insts().keys() {
-                generate_inst(self, inst, writer, &mut value_map, &mut reg_idx)?;
-            }
-        }
         Ok(())
     }
 }
 
-/// generate asm based on each instruction
-fn generate_inst(
-    func_data: &FunctionData,
-    inst: Value,
-    writer: &mut dyn Write,
-    value_map: &mut HashMap<Value, String>,
-    reg_idx: &mut usize,
-) -> Result<()> {
-    let value_data = func_data.dfg().value(inst);
-    match value_data.kind() {
-        ValueKind::Integer(_) => {}
-        ValueKind::Return(ret) => {
-            if let Some(ret_val) = ret.value() {
-                load_to_reg(func_data, ret_val, "a0", writer, value_map)?;
+/// Asm generator
+pub struct AsmGen<'a> {
+    writer: &'a mut dyn Write,
+    func_data: &'a FunctionData,
+    // inst -> stack offset
+    stack_map: HashMap<Value, i32>,
+    stack_size: i32,
+}
+
+impl<'a> AsmGen<'a> {
+    /// Create a new AsmGen instance
+    pub fn new(writer: &'a mut dyn Write, func_data: &'a FunctionData) -> Self {
+        let mut stack_map = HashMap::new();
+        let mut offset = 0;
+        for (&_bb, node) in func_data.layout().bbs() {
+            for &inst in node.insts().keys() {
+                let val_data = func_data.dfg().value(inst);
+                // 只有返回值非空时才分配内存空间
+                if !val_data.ty().is_unit() {
+                    stack_map.insert(inst, offset);
+                    offset += 4;
+                }
             }
-            writeln!(writer, "\tret")?;
         }
-        ValueKind::Binary(bin) => {
-            // 获取操作数的寄存器
-            let rs = get_operand_reg(func_data, bin.lhs(), writer, value_map, reg_idx)?;
-            let rd = get_operand_reg(func_data, bin.rhs(), writer, value_map, reg_idx)?;
-            let rt = if rs != "x0" {
-                rs.clone()
-            } else if rd != "x0" {
-                rd.clone()
+        let stack_size = (offset + 15) & !15; // align to 16 bytes
+        Self {
+            writer,
+            func_data,
+            stack_map,
+            stack_size,
+        }
+    }
+
+    fn load_to_reg(&mut self, val: Value, reg: &str) -> Result<()> {
+        let val_data = self.func_data.dfg().value(val);
+        match val_data.kind() {
+            ValueKind::Integer(int) => {
+                writeln!(self.writer, "\tli {}, {}", reg, int.value())?;
+            }
+            _ => {
+                if let Some(&offset) = self.stack_map.get(&val) {
+                    if offset < -2048 || offset > 2047 {
+                        writeln!(self.writer, "\tli {}, {}", reg, offset)?;
+                        writeln!(self.writer, "\tadd {}, sp, {}", reg, reg)?;
+                        writeln!(self.writer, "\tlw {}, 0({})", reg, reg)?;
+                    } else {
+                        writeln!(self.writer, "\tlw {}, {}(sp)", reg, offset)?;
+                    }
+                } else {
+                    panic!("Value {:?} not found in stack map", val);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn store_from_reg(&mut self, val: Value, reg: &str) -> Result<()> {
+        if let Some(&offset) = self.stack_map.get(&val) {
+            if offset < -2048 || offset > 2047 {
+                writeln!(self.writer, "\tli t3, {}", offset)?;
+                writeln!(self.writer, "\tadd t3, sp, t3")?;
+                writeln!(self.writer, "\tsw {}, 0(t3)", reg)?;
             } else {
-                let reg = get_reg(reg_idx);
-                *reg_idx += 1;
-                reg
-            };
-
-            match bin.op() {
-                BinaryOp::Add => writeln!(writer, "\tadd {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Sub => writeln!(writer, "\tsub {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Mul => writeln!(writer, "\tmul {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Div => writeln!(writer, "\tdiv {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Mod => writeln!(writer, "\trem {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Lt => writeln!(writer, "\tslt {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Gt => writeln!(writer, "\tsgt {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Le => writeln!(writer, "\tsgt {}, {}, {}", rt, rd, rs)?,
-                BinaryOp::Ge => writeln!(writer, "\tslt {}, {}, {}", rt, rd, rs)?,
-                BinaryOp::And => writeln!(writer, "\tand {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Or => writeln!(writer, "\tor {}, {}, {}", rt, rs, rd)?,
-                BinaryOp::Eq => {
-                    writeln!(writer, "\txor {}, {}, {}", rt, rs, rd)?;
-                    writeln!(writer, "\tseqz {}, {}", rt, rt)?;
-                }
-                BinaryOp::NotEq => {
-                    writeln!(writer, "\txor {}, {}, {}", rt, rs, rd)?;
-                    writeln!(writer, "\tsnez {}, {}", rt, rt)?;
-                }
-                _ => unreachable!(),
-            }
-            value_map.insert(inst, rt);
-        }
-        _ => unreachable!(),
-    }
-    Ok(())
-}
-
-/// Load a value into a register
-fn load_to_reg(
-    func_data: &FunctionData,
-    val: Value,
-    dst_reg: &str,
-    writer: &mut dyn Write,
-    value_map: &HashMap<Value, String>,
-) -> Result<()> {
-    let val_data = func_data.dfg().value(val);
-    match val_data.kind() {
-        ValueKind::Integer(int) => {
-            writeln!(writer, "\tli {}, {}", dst_reg, int.value())?;
-        }
-        _ => {
-            if let Some(src_reg) = value_map.get(&val) {
-                if src_reg != dst_reg {
-                    writeln!(writer, "\tmv {}, {}", dst_reg, src_reg)?;
-                }
-            } else {
-                panic!("Register not found!");
+                writeln!(self.writer, "\tsw {}, {}(sp)", reg, offset)?;
             }
         }
-    }
-    Ok(())
-}
-
-/// Get the register for an operand value
-fn get_operand_reg(
-    func_data: &FunctionData,
-    val: Value,
-    writer: &mut dyn Write,
-    value_map: &HashMap<Value, String>,
-    reg_idx: &mut usize,
-) -> Result<String> {
-    // Check if the value is already mapped to a register
-    if let Some(reg) = value_map.get(&val) {
-        return Ok(reg.clone());
+        Ok(())
     }
 
-    let val_data = func_data.dfg().value(val);
-    // If the value is an integer zero, return x0 directly
-    if let ValueKind::Integer(int) = val_data.kind() {
-        if int.value() == 0 {
-            return Ok("x0".to_string());
+    /// Generate asm code for the function
+    pub fn generate(&mut self) -> Result<()> {
+        // prologue
+        if self.stack_size > 0 {
+            writeln!(self.writer, "\taddi sp, sp, -{}", self.stack_size)?;
         }
-    }
-    // Otherwise, allocate a new register and load the value into it
-    let reg = get_reg(reg_idx);
-    *reg_idx += 1;
-    load_to_reg(func_data, val, &reg, writer, value_map)?;
-    Ok(reg)
-}
+        for (&_bb, node) in self.func_data.layout().bbs() {
+            for &inst in node.insts().keys() {
+                let value_data = self.func_data.dfg().value(inst);
+                match value_data.kind() {
+                    ValueKind::Integer(_) => {}
+                    ValueKind::Return(ret) => {
+                        if let Some(ret_val) = ret.value() {
+                            self.load_to_reg(ret_val, "a0")?;
+                        }
+                        // epilogue
+                        if self.stack_size > 0 {
+                            writeln!(self.writer, "\taddi sp, sp, {}", self.stack_size)?;
+                        }
+                        writeln!(self.writer, "\tret")?;
+                    }
+                    ValueKind::Binary(bin) => {
+                        // 获取操作数的寄存器
+                        self.load_to_reg(bin.lhs(), "t0")?;
+                        self.load_to_reg(bin.rhs(), "t1")?;
 
-/// Get a register name based on the index
-fn get_reg(reg_idx: &mut usize) -> String {
-    if *reg_idx < 7 {
-        let reg = format!("t{}", *reg_idx);
-        reg
-    } else if *reg_idx < 15 {
-        let reg = format!("a{}", *reg_idx - 7);
-        reg
-    } else {
-        panic!("Register overflow!");
+                        match bin.op() {
+                            BinaryOp::Add => writeln!(self.writer, "\tadd t0, t0, t1")?,
+                            BinaryOp::Sub => writeln!(self.writer, "\tsub t0, t0, t1")?,
+                            BinaryOp::Mul => writeln!(self.writer, "\tmul t0, t0, t1")?,
+                            BinaryOp::Div => writeln!(self.writer, "\tdiv t0, t0, t1")?,
+                            BinaryOp::Mod => writeln!(self.writer, "\trem t0, t0, t1")?,
+                            BinaryOp::Lt => writeln!(self.writer, "\tslt t0, t0, t1")?,
+                            BinaryOp::Gt => writeln!(self.writer, "\tsgt t0, t0, t1")?,
+                            BinaryOp::Le => {
+                                writeln!(self.writer, "\tsgt t0, t0, t1")?;
+                                writeln!(self.writer, "\tseqz t0, t0")?;
+                            }
+                            BinaryOp::Ge => {
+                                writeln!(self.writer, "\tslt t0, t0, t1")?;
+                                writeln!(self.writer, "\tseqz t0, t0")?;
+                            }
+                            BinaryOp::And => writeln!(self.writer, "\tand t0, t0, t1")?,
+                            BinaryOp::Or => writeln!(self.writer, "\tor t0, t0, t1")?,
+                            BinaryOp::Eq => {
+                                writeln!(self.writer, "\txor t0, t0, t1")?;
+                                writeln!(self.writer, "\tseqz t0, t0")?;
+                            }
+                            BinaryOp::NotEq => {
+                                writeln!(self.writer, "\txor t0, t0, t1")?;
+                                writeln!(self.writer, "\tsnez t0, t0")?;
+                            }
+                            _ => unreachable!(),
+                        }
+                        self.store_from_reg(inst, "t0")?;
+                    }
+                    ValueKind::Alloc(_) => {}
+                    ValueKind::Load(load) => {
+                        self.load_to_reg(load.src(), "t0")?;
+                        self.store_from_reg(inst, "t0")?;
+                    }
+                    ValueKind::Store(store) => {
+                        self.load_to_reg(store.value(), "t0")?;
+                        self.store_from_reg(store.dest(), "t0")?;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        Ok(())
     }
 }
