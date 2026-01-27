@@ -1,15 +1,19 @@
 use super::{GenContext, Symbol};
 use crate::ast::*;
-use koopa::ir::builder_traits::*;
 use koopa::ir::{BasicBlock, BinaryOp, Value};
+use koopa::ir::{Type, builder_traits::*};
 
 /// Generate Koopa IR for an expression
-pub fn generate_exp(ctx: &mut GenContext, bb: BasicBlock, exp: &Exp) -> Value {
+pub fn generate_exp(ctx: &mut GenContext, bb: &mut BasicBlock, exp: &Exp) -> Value {
     generate_lor_exp(ctx, bb, &exp.lor_exp)
 }
 
 /// Generate Koopa IR for a unary expression
-pub fn generate_unary_exp(ctx: &mut GenContext, bb: BasicBlock, unary_exp: &UnaryExp) -> Value {
+pub fn generate_unary_exp(
+    ctx: &mut GenContext,
+    bb: &mut BasicBlock,
+    unary_exp: &UnaryExp,
+) -> Value {
     match unary_exp {
         UnaryExp::PrimaryExp(primary_exp) => generate_primary_exp(ctx, bb, primary_exp),
         UnaryExp::UnaryOp { op, exp } => {
@@ -33,7 +37,7 @@ pub fn generate_unary_exp(ctx: &mut GenContext, bb: BasicBlock, unary_exp: &Unar
             if !matches!(op, UnaryOp::Plus) {
                 ctx.func_data
                     .layout_mut()
-                    .bb_mut(bb)
+                    .bb_mut(*bb)
                     .insts_mut()
                     .push_key_back(result)
                     .expect("failed to push unary exp");
@@ -46,7 +50,7 @@ pub fn generate_unary_exp(ctx: &mut GenContext, bb: BasicBlock, unary_exp: &Unar
 /// Generate Koopa IR for a primary expression
 pub fn generate_primary_exp(
     ctx: &mut GenContext,
-    bb: BasicBlock,
+    bb: &mut BasicBlock,
     primary_exp: &PrimaryExp,
 ) -> Value {
     match primary_exp {
@@ -61,7 +65,7 @@ pub fn generate_primary_exp(
                         let load = ctx.func_data.dfg_mut().new_value().load(val);
                         ctx.func_data
                             .layout_mut()
-                            .bb_mut(bb)
+                            .bb_mut(*bb)
                             .insts_mut()
                             .push_key_back(load)
                             .expect("failed to add load instruction");
@@ -76,7 +80,7 @@ pub fn generate_primary_exp(
 }
 
 /// Generate Koopa IR for an additive expression
-pub fn generate_add_exp(ctx: &mut GenContext, bb: BasicBlock, add_exp: &AddExp) -> Value {
+pub fn generate_add_exp(ctx: &mut GenContext, bb: &mut BasicBlock, add_exp: &AddExp) -> Value {
     match add_exp {
         AddExp::MulExp(mul_exp) => generate_mul_exp(ctx, bb, mul_exp),
         AddExp::AddOp { lhs, op, rhs } => {
@@ -98,7 +102,7 @@ pub fn generate_add_exp(ctx: &mut GenContext, bb: BasicBlock, add_exp: &AddExp) 
             };
             ctx.func_data
                 .layout_mut()
-                .bb_mut(bb)
+                .bb_mut(*bb)
                 .insts_mut()
                 .push_key_back(result)
                 .expect("failed to push add exp");
@@ -108,7 +112,7 @@ pub fn generate_add_exp(ctx: &mut GenContext, bb: BasicBlock, add_exp: &AddExp) 
 }
 
 /// Generate Koopa IR for a multiplicative expression
-pub fn generate_mul_exp(ctx: &mut GenContext, bb: BasicBlock, mul_exp: &MulExp) -> Value {
+pub fn generate_mul_exp(ctx: &mut GenContext, bb: &mut BasicBlock, mul_exp: &MulExp) -> Value {
     match mul_exp {
         MulExp::UnaryExp(unary_exp) => generate_unary_exp(ctx, bb, unary_exp),
         MulExp::MulOp { lhs, op, rhs } => {
@@ -136,7 +140,7 @@ pub fn generate_mul_exp(ctx: &mut GenContext, bb: BasicBlock, mul_exp: &MulExp) 
             };
             ctx.func_data
                 .layout_mut()
-                .bb_mut(bb)
+                .bb_mut(*bb)
                 .insts_mut()
                 .push_key_back(result)
                 .expect("failed to push mul exp");
@@ -146,7 +150,7 @@ pub fn generate_mul_exp(ctx: &mut GenContext, bb: BasicBlock, mul_exp: &MulExp) 
 }
 
 /// Generate Koopa IR for a relational expression
-pub fn generate_rel_exp(ctx: &mut GenContext, bb: BasicBlock, rel_exp: &RelExp) -> Value {
+pub fn generate_rel_exp(ctx: &mut GenContext, bb: &mut BasicBlock, rel_exp: &RelExp) -> Value {
     match rel_exp {
         RelExp::AddExp(add_exp) => generate_add_exp(ctx, bb, add_exp),
         RelExp::RelOp { lhs, op, rhs } => {
@@ -180,7 +184,7 @@ pub fn generate_rel_exp(ctx: &mut GenContext, bb: BasicBlock, rel_exp: &RelExp) 
             };
             ctx.func_data
                 .layout_mut()
-                .bb_mut(bb)
+                .bb_mut(*bb)
                 .insts_mut()
                 .push_key_back(result)
                 .expect("failed to push rel exp");
@@ -190,7 +194,7 @@ pub fn generate_rel_exp(ctx: &mut GenContext, bb: BasicBlock, rel_exp: &RelExp) 
 }
 
 /// Generate Koopa IR for an equality expression
-pub fn generate_eq_exp(ctx: &mut GenContext, bb: BasicBlock, eq_exp: &EqExp) -> Value {
+pub fn generate_eq_exp(ctx: &mut GenContext, bb: &mut BasicBlock, eq_exp: &EqExp) -> Value {
     match eq_exp {
         EqExp::RelExp(rel_exp) => generate_rel_exp(ctx, bb, rel_exp),
         EqExp::EqOp { lhs, op, rhs } => {
@@ -212,7 +216,7 @@ pub fn generate_eq_exp(ctx: &mut GenContext, bb: BasicBlock, eq_exp: &EqExp) -> 
             };
             ctx.func_data
                 .layout_mut()
-                .bb_mut(bb)
+                .bb_mut(*bb)
                 .insts_mut()
                 .push_key_back(result)
                 .expect("failed to push eq exp");
@@ -222,67 +226,138 @@ pub fn generate_eq_exp(ctx: &mut GenContext, bb: BasicBlock, eq_exp: &EqExp) -> 
 }
 
 /// Generate Koopa IR for a logical AND expression
-pub fn generate_land_exp(ctx: &mut GenContext, bb: BasicBlock, land_exp: &LAndExp) -> Value {
+pub fn generate_land_exp(ctx: &mut GenContext, bb: &mut BasicBlock, land_exp: &LAndExp) -> Value {
     match land_exp {
         LAndExp::EqExp(eq_exp) => generate_eq_exp(ctx, bb, eq_exp),
         LAndExp::LAndOp { lhs, rhs } => {
+            // 处理短路逻辑
             let lhs_val = generate_land_exp(ctx, bb, lhs);
-            let rhs_val = generate_eq_exp(ctx, bb, rhs);
+            // 创建两个基本块
+            let true_bb = ctx
+                .func_data
+                .dfg_mut()
+                .new_bb()
+                .basic_block(Some(format!("%land_true{}", ctx.land_counter)));
+            let end_bb = ctx
+                .func_data
+                .dfg_mut()
+                .new_bb()
+                .basic_block(Some(format!("%land_end{}", ctx.land_counter)));
+            ctx.func_data
+                .layout_mut()
+                .bbs_mut()
+                .extend([true_bb, end_bb]);
+            ctx.land_counter += 1;
+            // 创建初始指令
+            let res_ptr = ctx.func_data.dfg_mut().new_value().alloc(Type::get_i32());
             let zero = ctx.func_data.dfg_mut().new_value().integer(0);
-            let lhs_ne0 =
-                ctx.func_data
-                    .dfg_mut()
-                    .new_value()
-                    .binary(BinaryOp::NotEq, lhs_val, zero);
+            let init_store = ctx.func_data.dfg_mut().new_value().store(zero, res_ptr);
+            let br = ctx
+                .func_data
+                .dfg_mut()
+                .new_value()
+                .branch(lhs_val, true_bb, end_bb);
+            ctx.func_data
+                .layout_mut()
+                .bb_mut(*bb)
+                .insts_mut()
+                .extend([res_ptr, init_store, br]);
+
+            // 处理true分支
+            *bb = true_bb;
+            let rhs_val = generate_eq_exp(ctx, bb, rhs);
             let rhs_ne0 =
                 ctx.func_data
                     .dfg_mut()
                     .new_value()
                     .binary(BinaryOp::NotEq, rhs_val, zero);
-            let result =
-                ctx.func_data
-                    .dfg_mut()
-                    .new_value()
-                    .binary(BinaryOp::And, lhs_ne0, rhs_ne0);
+            let store = ctx.func_data.dfg_mut().new_value().store(rhs_ne0, res_ptr);
+            let jmp = ctx.func_data.dfg_mut().new_value().jump(end_bb);
             ctx.func_data
                 .layout_mut()
-                .bb_mut(bb)
+                .bb_mut(*bb)
                 .insts_mut()
-                .extend([lhs_ne0, rhs_ne0, result]);
-            result
+                .extend([rhs_ne0, store, jmp]);
+
+            // 处理end分支
+            *bb = end_bb;
+            let load = ctx.func_data.dfg_mut().new_value().load(res_ptr);
+            ctx.func_data
+                .layout_mut()
+                .bb_mut(*bb)
+                .insts_mut()
+                .push_key_back(load)
+                .expect("failed to add load instruction");
+            load
         }
     }
 }
 
 /// Generate Koopa IR for a logical OR expression
-pub fn generate_lor_exp(ctx: &mut GenContext, bb: BasicBlock, lor_exp: &LOrExp) -> Value {
+pub fn generate_lor_exp(ctx: &mut GenContext, bb: &mut BasicBlock, lor_exp: &LOrExp) -> Value {
     match lor_exp {
         LOrExp::LAndExp(land_exp) => generate_land_exp(ctx, bb, land_exp),
         LOrExp::LOrOp { lhs, rhs } => {
+            // 处理短路逻辑
             let lhs_val = generate_lor_exp(ctx, bb, lhs);
+            // 创建两个基本块
+            let false_bb = ctx
+                .func_data
+                .dfg_mut()
+                .new_bb()
+                .basic_block(Some(format!("%lor_false{}", ctx.lor_counter)));
+            let end_bb = ctx
+                .func_data
+                .dfg_mut()
+                .new_bb()
+                .basic_block(Some(format!("%lor_end{}", ctx.lor_counter)));
+            ctx.func_data
+                .layout_mut()
+                .bbs_mut()
+                .extend([false_bb, end_bb]);
+            ctx.lor_counter += 1;
+            // 创建初始指令
+            let res_ptr = ctx.func_data.dfg_mut().new_value().alloc(Type::get_i32());
+            let one = ctx.func_data.dfg_mut().new_value().integer(1);
+            let init_store = ctx.func_data.dfg_mut().new_value().store(one, res_ptr);
+            let br = ctx
+                .func_data
+                .dfg_mut()
+                .new_value()
+                .branch(lhs_val, end_bb, false_bb);
+            ctx.func_data
+                .layout_mut()
+                .bb_mut(*bb)
+                .insts_mut()
+                .extend([res_ptr, init_store, br]);
+
+            // 处理false分支
+            *bb = false_bb;
             let rhs_val = generate_land_exp(ctx, bb, rhs);
             let zero = ctx.func_data.dfg_mut().new_value().integer(0);
-            let lhs_ne0 =
-                ctx.func_data
-                    .dfg_mut()
-                    .new_value()
-                    .binary(BinaryOp::NotEq, lhs_val, zero);
             let rhs_ne0 =
                 ctx.func_data
                     .dfg_mut()
                     .new_value()
                     .binary(BinaryOp::NotEq, rhs_val, zero);
-            let result = ctx
-                .func_data
-                .dfg_mut()
-                .new_value()
-                .binary(BinaryOp::Or, lhs_ne0, rhs_ne0);
+            let store = ctx.func_data.dfg_mut().new_value().store(rhs_ne0, res_ptr);
+            let jmp = ctx.func_data.dfg_mut().new_value().jump(end_bb);
             ctx.func_data
                 .layout_mut()
-                .bb_mut(bb)
+                .bb_mut(*bb)
                 .insts_mut()
-                .extend([lhs_ne0, rhs_ne0, result]);
-            result
+                .extend([rhs_ne0, store, jmp]);
+
+            // 处理end分支
+            *bb = end_bb;
+            let load = ctx.func_data.dfg_mut().new_value().load(res_ptr);
+            ctx.func_data
+                .layout_mut()
+                .bb_mut(*bb)
+                .insts_mut()
+                .push_key_back(load)
+                .expect("failed to add load instruction");
+            load
         }
     }
 }

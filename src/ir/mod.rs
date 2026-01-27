@@ -20,6 +20,8 @@ pub struct GenContext<'a> {
     func_data: &'a mut FunctionData,
     scopes: Vec<HashMap<String, Symbol>>,
     bb_counter: usize,
+    land_counter: usize,
+    lor_counter: usize,
 }
 
 impl<'a> GenContext<'a> {
@@ -78,6 +80,8 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
         func_data: program.func_mut(func),
         scopes: vec![HashMap::new()],
         bb_counter: 0,
+        land_counter: 0,
+        lor_counter: 0,
     };
 
     // 在函数中创建一个基本块(entry basic block)
@@ -98,7 +102,7 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
     program
 }
 
-/// Generate Koopa IR for a block
+/// Generate Koopa IR for a block and return the latest insertion block
 pub fn generate_block(ctx: &mut GenContext, bb: BasicBlock, block: &Block) -> BasicBlock {
     let mut current_bb = bb;
     for block_item in &block.block_items {
@@ -111,20 +115,20 @@ pub fn generate_block(ctx: &mut GenContext, bb: BasicBlock, block: &Block) -> Ba
                 current_bb = generate_stmt(ctx, current_bb, &stmt);
             }
             BlockItem::Decl(decl) => {
-                generate_decl(ctx, current_bb, &decl);
+                current_bb = generate_decl(ctx, current_bb, &decl);
             }
         }
     }
     current_bb
 }
 
-/// Generate Koopa IR for a statement
+/// Generate Koopa IR for a statement and return the latest insertion block
 pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> BasicBlock {
     let mut current_bb = bb;
     match stmt {
         Stmt::Return(exp) => {
             // 生成语句的中间表示
-            let ret_val = generate_exp(ctx, current_bb, exp);
+            let ret_val = generate_exp(ctx, &mut current_bb, exp);
             let ret = ctx.func_data.dfg_mut().new_value().ret(Some(ret_val));
             // 将返回语句添加到基本块中
             ctx.func_data
@@ -144,7 +148,7 @@ pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> Basic
                 panic!("Cannot assign a undefined variable!");
             };
             // 生成表达式的结果
-            let res = generate_exp(ctx, current_bb, exp);
+            let res = generate_exp(ctx, &mut current_bb, exp);
             // 将结果存入symbol table
             let store = ctx.func_data.dfg_mut().new_value().store(res, var);
             ctx.func_data
@@ -161,7 +165,7 @@ pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> Basic
         }
         Stmt::Exp(opt_exp) => {
             if let Some(exp) = opt_exp {
-                generate_exp(ctx, current_bb, exp);
+                generate_exp(ctx, &mut current_bb, exp);
             } else {
                 // 空表达式语句，不做任何操作
             }
@@ -173,7 +177,7 @@ pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> Basic
                 else_stmt,
             } = &if_stmt;
             // 生成条件表达式的结果
-            let cond_val = generate_exp(ctx, current_bb, cond);
+            let cond_val = generate_exp(ctx, &mut current_bb, cond);
             // 创建基本块
             let then_bb = ctx
                 .func_data
@@ -256,8 +260,9 @@ pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> Basic
     current_bb
 }
 
-/// Generate Koopa IR for a declaration
-pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) {
+/// Generate Koopa IR for a declaration and return the latest insertion block
+pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) -> BasicBlock {
+    let mut current_bb = bb;
     match decl {
         Decl::ConstDecl(const_decl) => {
             for def in &const_decl.const_defs {
@@ -272,18 +277,18 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) {
                 let alloc = ctx.func_data.dfg_mut().new_value().alloc(Type::get_i32());
                 ctx.func_data
                     .layout_mut()
-                    .bb_mut(bb)
+                    .bb_mut(current_bb)
                     .insts_mut()
                     .push_key_back(alloc)
                     .expect("failed to add alloc instruction");
                 ctx.insert_symbol(def.ident.clone(), Symbol::Var(alloc));
                 // 处理初始化值
                 if let Some(init_val) = &def.init_val {
-                    let res = generate_exp(ctx, bb, &init_val.exp);
+                    let res = generate_exp(ctx, &mut current_bb, &init_val.exp);
                     let store = ctx.func_data.dfg_mut().new_value().store(res, alloc);
                     ctx.func_data
                         .layout_mut()
-                        .bb_mut(bb)
+                        .bb_mut(current_bb)
                         .insts_mut()
                         .push_key_back(store)
                         .expect("failed to add store instruction");
@@ -291,4 +296,5 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) {
             }
         }
     }
+    current_bb
 }
