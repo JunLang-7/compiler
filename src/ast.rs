@@ -35,6 +35,8 @@ pub enum Stmt {
     Exp(Option<Exp>),
     If(If),
     While(While),
+    Break(Break),
+    Continue(Continue),
 }
 
 #[derive(Debug)]
@@ -218,6 +220,12 @@ pub struct While {
     pub cond: Exp,
     pub body: Box<Stmt>,
 }
+
+#[derive(Debug)]
+pub struct Break;
+
+#[derive(Debug)]
+pub struct Continue;
 
 /// Check if the AST is valid
 pub fn check_ast(ast: &CompUnit) {

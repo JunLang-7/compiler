@@ -19,6 +19,7 @@ pub enum Symbol {
 pub struct GenContext<'a> {
     func_data: &'a mut FunctionData,
     scopes: Vec<HashMap<String, Symbol>>,
+    loop_stack: Vec<(BasicBlock, BasicBlock)>, // (continue_bb, break_bb)
     if_counter: usize,
     while_counter: usize,
     land_counter: usize,
@@ -51,6 +52,22 @@ impl<'a> GenContext<'a> {
         None
     }
 
+    /// Enter a loop with given continue and break basic blocks
+    fn enter_loop(&mut self, entry: BasicBlock, end: BasicBlock) {
+        self.loop_stack.push((entry, end));
+    }
+
+    /// Exit the current loop
+    fn exit_loop(&mut self) {
+        self.loop_stack.pop();
+    }
+
+    /// Get the continue and break basic blocks of the current loop
+    fn current_loop(&self) -> Option<(BasicBlock, BasicBlock)> {
+        self.loop_stack.last().cloned()
+    }
+
+    /// Check if a basic block is terminated
     pub fn is_bb_terminated(&mut self, bb: BasicBlock) -> bool {
         for (b, node) in self.func_data.layout().bbs() {
             if *b == bb {
@@ -80,6 +97,7 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
     let mut ctx = GenContext {
         func_data: program.func_mut(func),
         scopes: vec![HashMap::new()],
+        loop_stack: vec![],
         if_counter: 0,
         while_counter: 0,
         land_counter: 0,
@@ -309,7 +327,9 @@ pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> Basic
                 .expect("failed to add branch instruction in while");
 
             // 生成循环体
+            ctx.enter_loop(entry_bb, end_bb);
             let body_end_bb = generate_stmt(ctx, body_bb, body);
+            ctx.exit_loop();
             if !ctx.is_bb_terminated(body_end_bb) {
                 let jmp_back = ctx.func_data.dfg_mut().new_value().jump(entry_bb);
                 ctx.func_data
@@ -322,6 +342,32 @@ pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> Basic
 
             // 更新当前基本块为循环结束块
             current_bb = end_bb;
+        }
+        Stmt::Break(_) => {
+            if let Some((_, break_bb)) = ctx.current_loop() {
+                let jmp = ctx.func_data.dfg_mut().new_value().jump(break_bb);
+                ctx.func_data
+                    .layout_mut()
+                    .bb_mut(current_bb)
+                    .insts_mut()
+                    .push_key_back(jmp)
+                    .expect("failed to add jump instruction for break");
+            } else {
+                panic!("'break' statement not within a loop");
+            }
+        }
+        Stmt::Continue(_) => {
+            if let Some((continue_bb, _)) = ctx.current_loop() {
+                let jmp = ctx.func_data.dfg_mut().new_value().jump(continue_bb);
+                ctx.func_data
+                    .layout_mut()
+                    .bb_mut(current_bb)
+                    .insts_mut()
+                    .push_key_back(jmp)
+                    .expect("failed to add jump instruction for continue");
+            } else {
+                panic!("'continue' statement not within a loop");
+            }
         }
     }
     current_bb
