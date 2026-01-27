@@ -1,11 +1,11 @@
 mod eval;
 mod exp;
 
-use crate::ast::{self, Block, BlockItem, Decl, Stmt};
+use crate::ast::{self, Block, BlockItem, Decl, If, Stmt};
 use eval::Eval;
 use exp::generate_exp;
-use koopa::ir::builder_traits::*;
 use koopa::ir::{BasicBlock, FunctionData, Program, Type, Value};
+use koopa::ir::{ValueKind, builder_traits::*};
 use std::collections::HashMap;
 
 /// enumerate for symbol table
@@ -19,6 +19,7 @@ pub enum Symbol {
 pub struct GenContext<'a> {
     func_data: &'a mut FunctionData,
     scopes: Vec<HashMap<String, Symbol>>,
+    bb_counter: usize,
 }
 
 impl<'a> GenContext<'a> {
@@ -46,6 +47,25 @@ impl<'a> GenContext<'a> {
         }
         None
     }
+
+    pub fn is_bb_terminated(&mut self, bb: BasicBlock) -> bool {
+        for (b, node) in self.func_data.layout().bbs() {
+            if *b == bb {
+                if let Some(last_inst) = node.insts().back_key() {
+                    let last = self.func_data.dfg().value(*last_inst);
+                    match last.kind() {
+                        ValueKind::Return(_) | ValueKind::Branch(_) | ValueKind::Jump(_) => {
+                            return true;
+                        }
+                        _ => return false,
+                    }
+                } else {
+                    return false;
+                }
+            }
+        }
+        false
+    }
 }
 
 /// Generate Koopa IR from the AST
@@ -57,6 +77,7 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
     let mut ctx = GenContext {
         func_data: program.func_mut(func),
         scopes: vec![HashMap::new()],
+        bb_counter: 0,
     };
 
     // 在函数中创建一个基本块(entry basic block)
@@ -78,62 +99,161 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
 }
 
 /// Generate Koopa IR for a block
-pub fn generate_block(ctx: &mut GenContext, bb: BasicBlock, block: &Block) {
+pub fn generate_block(ctx: &mut GenContext, bb: BasicBlock, block: &Block) -> BasicBlock {
+    let mut current_bb = bb;
     for block_item in &block.block_items {
+        // 如果当前基本块已经终止，停止生成
+        if ctx.is_bb_terminated(current_bb) {
+            break;
+        }
         match block_item {
             BlockItem::Stmt(stmt) => {
-                match stmt {
-                    Stmt::Return(exp) => {
-                        // 生成语句的中间表示
-                        let ret_val = generate_exp(ctx, bb, exp);
-                        let ret = ctx.func_data.dfg_mut().new_value().ret(Some(ret_val));
-                        // 将返回语句添加到基本块中
-                        ctx.func_data
-                            .layout_mut()
-                            .bb_mut(bb)
-                            .insts_mut()
-                            .push_key_back(ret)
-                            .expect("fail to push return value");
-                    }
-                    Stmt::LValAssign { lval, exp } => {
-                        let var = if let Some(symbol) = ctx.lookup_symbol(&lval.ident) {
-                            match symbol {
-                                Symbol::Const(_) => unreachable!(),
-                                Symbol::Var(var) => var,
-                            }
-                        } else {
-                            panic!("Cannot assign a undefined variable!");
-                        };
-                        // 生成表达式的结果
-                        let res = generate_exp(ctx, bb, exp);
-                        // 将结果存入symbol table
-                        let store = ctx.func_data.dfg_mut().new_value().store(res, var);
-                        ctx.func_data
-                            .layout_mut()
-                            .bb_mut(bb)
-                            .insts_mut()
-                            .push_key_back(store)
-                            .expect("failed to push store instruction");
-                    }
-                    Stmt::Block(blk) => {
-                        ctx.enter_scope();
-                        generate_block(ctx, bb, blk);
-                        ctx.exit_scope();
-                    }
-                    Stmt::Exp(opt_exp) => {
-                        if let Some(exp) = opt_exp {
-                            generate_exp(ctx, bb, exp);
-                        } else {
-                            // 空表达式语句，不做任何操作
-                        }
-                    }
-                }
+                current_bb = generate_stmt(ctx, current_bb, &stmt);
             }
             BlockItem::Decl(decl) => {
-                generate_decl(ctx, bb, &decl);
+                generate_decl(ctx, current_bb, &decl);
             }
         }
     }
+    current_bb
+}
+
+/// Generate Koopa IR for a statement
+pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> BasicBlock {
+    let mut current_bb = bb;
+    match stmt {
+        Stmt::Return(exp) => {
+            // 生成语句的中间表示
+            let ret_val = generate_exp(ctx, current_bb, exp);
+            let ret = ctx.func_data.dfg_mut().new_value().ret(Some(ret_val));
+            // 将返回语句添加到基本块中
+            ctx.func_data
+                .layout_mut()
+                .bb_mut(current_bb)
+                .insts_mut()
+                .push_key_back(ret)
+                .expect("fail to push return value");
+        }
+        Stmt::LValAssign { lval, exp } => {
+            let var = if let Some(symbol) = ctx.lookup_symbol(&lval.ident) {
+                match symbol {
+                    Symbol::Const(_) => unreachable!(),
+                    Symbol::Var(var) => var,
+                }
+            } else {
+                panic!("Cannot assign a undefined variable!");
+            };
+            // 生成表达式的结果
+            let res = generate_exp(ctx, current_bb, exp);
+            // 将结果存入symbol table
+            let store = ctx.func_data.dfg_mut().new_value().store(res, var);
+            ctx.func_data
+                .layout_mut()
+                .bb_mut(current_bb)
+                .insts_mut()
+                .push_key_back(store)
+                .expect("failed to push store instruction");
+        }
+        Stmt::Block(blk) => {
+            ctx.enter_scope();
+            current_bb = generate_block(ctx, current_bb, blk);
+            ctx.exit_scope();
+        }
+        Stmt::Exp(opt_exp) => {
+            if let Some(exp) = opt_exp {
+                generate_exp(ctx, current_bb, exp);
+            } else {
+                // 空表达式语句，不做任何操作
+            }
+        }
+        Stmt::If(if_stmt) => {
+            let If {
+                cond,
+                then_stmt,
+                else_stmt,
+            } = &if_stmt;
+            // 生成条件表达式的结果
+            let cond_val = generate_exp(ctx, current_bb, cond);
+            // 创建基本块
+            let then_bb = ctx
+                .func_data
+                .dfg_mut()
+                .new_bb()
+                .basic_block(Some(format!("%then{}", ctx.bb_counter)));
+            let else_bb = if else_stmt.is_some() {
+                Some(
+                    ctx.func_data
+                        .dfg_mut()
+                        .new_bb()
+                        .basic_block(Some(format!("%else{}", ctx.bb_counter))),
+                )
+            } else {
+                None
+            };
+            let end_bb = ctx
+                .func_data
+                .dfg_mut()
+                .new_bb()
+                .basic_block(Some(format!("%end{}", ctx.bb_counter)));
+            ctx.bb_counter += 1;
+            // 将基本块添加到函数布局中
+            if let Some(else_bb) = else_bb {
+                ctx.func_data
+                    .layout_mut()
+                    .bbs_mut()
+                    .extend([then_bb, else_bb, end_bb]);
+            } else {
+                ctx.func_data
+                    .layout_mut()
+                    .bbs_mut()
+                    .extend([then_bb, end_bb]);
+            }
+            // 创建分支指令
+            let branch = if let Some(else_bb) = else_bb {
+                ctx.func_data
+                    .dfg_mut()
+                    .new_value()
+                    .branch(cond_val, then_bb, else_bb)
+            } else {
+                ctx.func_data
+                    .dfg_mut()
+                    .new_value()
+                    .branch(cond_val, then_bb, end_bb)
+            };
+            ctx.func_data
+                .layout_mut()
+                .bb_mut(current_bb)
+                .insts_mut()
+                .push_key_back(branch)
+                .expect("failed to add branch insturction");
+            // 生成then分支
+            let then_end_bb = generate_stmt(ctx, then_bb, then_stmt);
+            if !ctx.is_bb_terminated(then_end_bb) {
+                let jmp = ctx.func_data.dfg_mut().new_value().jump(end_bb);
+                ctx.func_data
+                    .layout_mut()
+                    .bb_mut(then_end_bb)
+                    .insts_mut()
+                    .push_key_back(jmp)
+                    .expect("failed to add jump instruction from then to end");
+            }
+            // 生成else分支
+            if let Some(else_stmt) = else_stmt {
+                let else_end_bb = generate_stmt(ctx, else_bb.unwrap(), else_stmt);
+                if !ctx.is_bb_terminated(else_end_bb) {
+                    let jmp = ctx.func_data.dfg_mut().new_value().jump(end_bb);
+                    ctx.func_data
+                        .layout_mut()
+                        .bb_mut(else_end_bb)
+                        .insts_mut()
+                        .push_key_back(jmp)
+                        .expect("failed to add jump instruction from else to end");
+                }
+            }
+            current_bb = end_bb;
+        }
+    }
+    current_bb
 }
 
 /// Generate Koopa IR for a declaration

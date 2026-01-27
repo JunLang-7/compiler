@@ -33,6 +33,7 @@ pub enum Stmt {
     LValAssign { lval: LVal, exp: Exp },
     Block(Block),
     Exp(Option<Exp>),
+    If(If),
 }
 
 #[derive(Debug)]
@@ -202,6 +203,13 @@ pub struct VarDef {
 #[derive(Debug)]
 pub struct InitVal {
     pub exp: Exp,
+}
+
+#[derive(Debug)]
+pub struct If {
+    pub cond: Exp,
+    pub then_stmt: Box<Stmt>,
+    pub else_stmt: Option<Box<Stmt>>,
 }
 
 /// Check if the AST is valid

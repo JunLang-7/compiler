@@ -1,5 +1,5 @@
 use core::panic;
-use koopa::ir::{BinaryOp, FunctionData, Program, Value, ValueKind};
+use koopa::ir::{BasicBlock, BinaryOp, FunctionData, Program, Value, ValueKind};
 use std::{
     collections::HashMap,
     io::{Result, Write},
@@ -12,7 +12,7 @@ pub trait GenerateAsm {
 
 impl GenerateAsm for Program {
     fn generate(&self, writer: &mut dyn Write) -> Result<()> {
-        writeln!(writer, "  .text")?;
+        writeln!(writer, "\t.text")?;
         for &func in self.func_layout() {
             self.func(func).generate(writer)?;
         }
@@ -108,7 +108,9 @@ impl<'a> AsmGen<'a> {
         if self.stack_size > 0 {
             writeln!(self.writer, "\taddi sp, sp, -{}", self.stack_size)?;
         }
-        for (&_bb, node) in self.func_data.layout().bbs() {
+        for (&bb, node) in self.func_data.layout().bbs() {
+            let label = self.get_bb_label(bb);
+            writeln!(self.writer, "{}:", label)?;
             for &inst in node.insts().keys() {
                 let value_data = self.func_data.dfg().value(inst);
                 match value_data.kind() {
@@ -167,10 +169,33 @@ impl<'a> AsmGen<'a> {
                         self.load_to_reg(store.value(), "t0")?;
                         self.store_from_reg(store.dest(), "t0")?;
                     }
+                    ValueKind::Branch(branch) => {
+                        let cond = branch.cond();
+                        self.load_to_reg(cond, "t0")?;
+                        writeln!(
+                            self.writer,
+                            "\tbnez t0, {}",
+                            self.get_bb_label(branch.true_bb())
+                        )?;
+                        writeln!(self.writer, "\tj {}", self.get_bb_label(branch.false_bb()))?;
+                    }
+                    ValueKind::Jump(jmp) => {
+                        writeln!(self.writer, "\tj {}", self.get_bb_label(jmp.target()))?;
+                    }
                     _ => unreachable!(),
                 }
             }
         }
         Ok(())
+    }
+
+    /// Get the label of a basic block
+    fn get_bb_label(&self, bb: BasicBlock) -> String {
+        let bb_data = self.func_data.dfg().bb(bb);
+        if let Some(name) = bb_data.name() {
+            name.trim_start_matches("%").to_string()
+        } else {
+            "unknown".to_string()
+        }
     }
 }
