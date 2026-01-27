@@ -38,7 +38,7 @@ Stmt: Stmt = {
 
 CloseStmt: Stmt = {
   "return" <exp: Exp>";" => Stmt::Return(exp),
-  <lval: LVal> "=" <exp: Exp> ";" => Stmt::LValAssign{ lval, exp },
+  <lval: LVal> "=" <exp: Exp> ";" => Stmt::LValAssign(LValAssign { lval, exp }),
   <block: Block> => Stmt::Block(<>),
   <exp: (Exp)?> ";" => Stmt::Exp(<>),
   "if" "(" <cond: Exp> ")" <then_stmt: CloseStmt> "else" <else_stmt: CloseStmt> => Stmt::If(If { cond, then_stmt: Box::new(then_stmt), else_stmt: Some(Box::new(else_stmt)) }),

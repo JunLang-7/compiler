@@ -30,7 +30,7 @@ pub enum BlockItem {
 #[derive(Debug)]
 pub enum Stmt {
     Return(Exp),
-    LValAssign { lval: LVal, exp: Exp },
+    LValAssign(LValAssign),
     Block(Block),
     Exp(Option<Exp>),
     If(If),
@@ -189,6 +189,12 @@ pub struct ConstExp {
 #[derive(Debug)]
 pub struct LVal {
     pub ident: String,
+}
+
+#[derive(Debug)]
+pub struct LValAssign {
+    pub lval: LVal,
+    pub exp: Exp,
 }
 
 #[derive(Debug)]
