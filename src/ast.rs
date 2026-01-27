@@ -34,6 +34,7 @@ pub enum Stmt {
     Block(Block),
     Exp(Option<Exp>),
     If(If),
+    While(While),
 }
 
 #[derive(Debug)]
@@ -210,6 +211,12 @@ pub struct If {
     pub cond: Exp,
     pub then_stmt: Box<Stmt>,
     pub else_stmt: Option<Box<Stmt>>,
+}
+
+#[derive(Debug)]
+pub struct While {
+    pub cond: Exp,
+    pub body: Box<Stmt>,
 }
 
 /// Check if the AST is valid

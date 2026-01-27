@@ -1,7 +1,7 @@
 mod eval;
 mod exp;
 
-use crate::ast::{self, Block, BlockItem, Decl, If, Stmt};
+use crate::ast::{self, Block, BlockItem, Decl, If, Stmt, While};
 use eval::Eval;
 use exp::generate_exp;
 use koopa::ir::{BasicBlock, FunctionData, Program, Type, Value};
@@ -19,7 +19,8 @@ pub enum Symbol {
 pub struct GenContext<'a> {
     func_data: &'a mut FunctionData,
     scopes: Vec<HashMap<String, Symbol>>,
-    bb_counter: usize,
+    if_counter: usize,
+    while_counter: usize,
     land_counter: usize,
     lor_counter: usize,
 }
@@ -79,7 +80,8 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
     let mut ctx = GenContext {
         func_data: program.func_mut(func),
         scopes: vec![HashMap::new()],
-        bb_counter: 0,
+        if_counter: 0,
+        while_counter: 0,
         land_counter: 0,
         lor_counter: 0,
     };
@@ -183,13 +185,13 @@ pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> Basic
                 .func_data
                 .dfg_mut()
                 .new_bb()
-                .basic_block(Some(format!("%then{}", ctx.bb_counter)));
+                .basic_block(Some(format!("%then{}", ctx.if_counter)));
             let else_bb = if else_stmt.is_some() {
                 Some(
                     ctx.func_data
                         .dfg_mut()
                         .new_bb()
-                        .basic_block(Some(format!("%else{}", ctx.bb_counter))),
+                        .basic_block(Some(format!("%else{}", ctx.if_counter))),
                 )
             } else {
                 None
@@ -198,8 +200,8 @@ pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> Basic
                 .func_data
                 .dfg_mut()
                 .new_bb()
-                .basic_block(Some(format!("%end{}", ctx.bb_counter)));
-            ctx.bb_counter += 1;
+                .basic_block(Some(format!("%end{}", ctx.if_counter)));
+            ctx.if_counter += 1;
             // 将基本块添加到函数布局中
             if let Some(else_bb) = else_bb {
                 ctx.func_data
@@ -254,6 +256,71 @@ pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> Basic
                         .expect("failed to add jump instruction from else to end");
                 }
             }
+            current_bb = end_bb;
+        }
+        Stmt::While(wh) => {
+            let While { cond, body } = &wh;
+            // 创建基本块
+            let entry_bb = ctx
+                .func_data
+                .dfg_mut()
+                .new_bb()
+                .basic_block(Some(format!("%while_entry{}", ctx.while_counter)));
+            let body_bb = ctx
+                .func_data
+                .dfg_mut()
+                .new_bb()
+                .basic_block(Some(format!("%while_body{}", ctx.while_counter)));
+            let end_bb = ctx
+                .func_data
+                .dfg_mut()
+                .new_bb()
+                .basic_block(Some(format!("%while_end{}", ctx.while_counter)));
+            ctx.while_counter += 1;
+            // 将基本块添加到函数布局中
+            ctx.func_data
+                .layout_mut()
+                .bbs_mut()
+                .extend([entry_bb, body_bb, end_bb]);
+            // 创建跳转到entry的指令
+            let jmp_to_entry = ctx.func_data.dfg_mut().new_value().jump(entry_bb);
+            ctx.func_data
+                .layout_mut()
+                .bb_mut(current_bb)
+                .insts_mut()
+                .push_key_back(jmp_to_entry)
+                .expect("failed to add jump instruction to while entry");
+
+            // 更新当前基本块为entry块
+            current_bb = entry_bb;
+            // 创建条件分支指令
+            let cond_val = generate_exp(ctx, &mut current_bb, cond);
+            let branch = ctx
+                .func_data
+                .dfg_mut()
+                .new_value()
+                .branch(cond_val, body_bb, end_bb);
+            // 将分支指令添加到当前基本块
+            ctx.func_data
+                .layout_mut()
+                .bb_mut(current_bb)
+                .insts_mut()
+                .push_key_back(branch)
+                .expect("failed to add branch instruction in while");
+
+            // 生成循环体
+            let body_end_bb = generate_stmt(ctx, body_bb, body);
+            if !ctx.is_bb_terminated(body_end_bb) {
+                let jmp_back = ctx.func_data.dfg_mut().new_value().jump(entry_bb);
+                ctx.func_data
+                    .layout_mut()
+                    .bb_mut(body_end_bb)
+                    .insts_mut()
+                    .push_key_back(jmp_back)
+                    .expect("failed to add jump instruction from body to entry");
+            }
+
+            // 更新当前基本块为循环结束块
             current_bb = end_bb;
         }
     }
