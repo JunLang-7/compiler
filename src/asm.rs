@@ -1,7 +1,8 @@
 use core::panic;
 use koopa::ir::{BasicBlock, BinaryOp, FunctionData, Program, Value, ValueKind};
 use std::{
-    collections::HashMap, io::{Result, Write}
+    collections::HashMap,
+    io::{Result, Write},
 };
 
 /// A trait to generate asm file base on Koopa IR
@@ -13,6 +14,9 @@ impl GenerateAsm for Program {
     fn generate(&self, writer: &mut dyn Write) -> Result<()> {
         for &func in self.func_layout() {
             let func_data = self.func(func);
+            if func_data.layout().entry_bb().is_none() {
+                continue; // skip declarations
+            }
             let name = func_data.name().trim_start_matches('@');
             writeln!(writer, "\t.text")?;
             writeln!(writer, "\t.globl {}", name)?;

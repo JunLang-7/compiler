@@ -6,8 +6,8 @@ mod stmt;
 
 use crate::ast::{self, Block, BlockItem, FuncDef, GlobalItem};
 use decl::generate_decl;
-use koopa::ir::builder_traits::*;
 use koopa::ir::{BasicBlock, FunctionData, Program};
+use koopa::ir::{Type, builder_traits::*};
 use stmt::generate_stmt;
 
 pub use context::{GenContext, Symbol};
@@ -19,6 +19,32 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
     // create the program and function
     let mut program = Program::new();
     let mut ctx = GenContext::new(&mut program);
+
+    // generate declarations
+    let mut new_decl = |name: &str, params_ty, ret_ty| {
+        let func = ctx.program.new_func(FunctionData::new_decl(
+            format!("@{}", name),
+            params_ty,
+            ret_ty,
+        ));
+        ctx.insert_symbol(name.into(), Symbol::Func(func));
+    };
+    new_decl("getint", vec![], Type::get_i32());
+    new_decl("getch", vec![], Type::get_i32());
+    new_decl(
+        "getarray",
+        vec![Type::get_pointer(Type::get_i32())],
+        Type::get_i32(),
+    );
+    new_decl("putint", vec![Type::get_i32()], Type::get_unit());
+    new_decl("putch", vec![Type::get_i32()], Type::get_unit());
+    new_decl(
+        "putarray",
+        vec![Type::get_i32(), Type::get_pointer(Type::get_i32())],
+        Type::get_unit(),
+    );
+    new_decl("starttime", vec![], Type::get_unit());
+    new_decl("stoptime", vec![], Type::get_unit());
 
     for item in &ast.items {
         match item {
