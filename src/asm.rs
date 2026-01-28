@@ -12,23 +12,16 @@ pub trait GenerateAsm {
 
 impl GenerateAsm for Program {
     fn generate(&self, writer: &mut dyn Write) -> Result<()> {
-        writeln!(writer, "\t.text")?;
         for &func in self.func_layout() {
-            self.func(func).generate(writer)?;
+            let func_data = self.func(func);
+            let name = func_data.name().trim_start_matches('@');
+            writeln!(writer, "\t.text")?;
+            writeln!(writer, "\t.globl {}", name)?;
+            writeln!(writer, "{}:", name)?;
+
+            let mut asm_gen = AsmGen::new(writer, self, func_data);
+            asm_gen.generate()?;
         }
-        Ok(())
-    }
-}
-
-impl GenerateAsm for FunctionData {
-    fn generate(&self, writer: &mut dyn Write) -> Result<()> {
-        let name = self.name().trim_start_matches('@');
-        writeln!(writer, "\t.globl {}", name)?;
-        writeln!(writer, "{}:", name)?;
-
-        let mut asm_gen = AsmGen::new(writer, self);
-        asm_gen.generate()?;
-
         Ok(())
     }
 }
@@ -36,20 +29,38 @@ impl GenerateAsm for FunctionData {
 /// Asm generator
 pub struct AsmGen<'a> {
     writer: &'a mut dyn Write,
+    program: &'a Program,
     func_data: &'a FunctionData,
     // inst -> stack offset
     stack_map: HashMap<Value, i32>,
     stack_size: i32,
+    has_call: bool,
 }
 
 impl<'a> AsmGen<'a> {
     /// Create a new AsmGen instance
-    pub fn new(writer: &'a mut dyn Write, func_data: &'a FunctionData) -> Self {
+    pub fn new(
+        writer: &'a mut dyn Write,
+        program: &'a Program,
+        func_data: &'a FunctionData,
+    ) -> Self {
         let mut stack_map = HashMap::new();
         let mut offset = 0;
+        let mut has_call = false;
+
+        // 为函数参数分配栈空间
+        for (i, &parm) in func_data.params().iter().enumerate() {
+            if i < 8 {
+                stack_map.insert(parm, offset);
+                offset += 4;
+            }
+        }
         for (&_bb, node) in func_data.layout().bbs() {
             for &inst in node.insts().keys() {
                 let val_data = func_data.dfg().value(inst);
+                if let ValueKind::Call(_) = val_data.kind() {
+                    has_call = true;
+                }
                 // 只有返回值非空时才分配内存空间
                 if !val_data.ty().is_unit() {
                     stack_map.insert(inst, offset);
@@ -57,12 +68,18 @@ impl<'a> AsmGen<'a> {
                 }
             }
         }
+        // 如果函数中有调用，则需要为保存ra寄存器分配空间
+        if has_call {
+            offset += 4;
+        }
         let stack_size = (offset + 15) & !15; // align to 16 bytes
         Self {
             writer,
+            program,
             func_data,
             stack_map,
             stack_size,
+            has_call,
         }
     }
 
@@ -107,6 +124,19 @@ impl<'a> AsmGen<'a> {
         // prologue
         if self.stack_size > 0 {
             writeln!(self.writer, "\taddi sp, sp, -{}", self.stack_size)?;
+            if self.has_call {
+                writeln!(self.writer, "\tsw ra, {}(sp)", self.stack_size - 4)?;
+            }
+        }
+
+        // 保存函数参数到栈上
+        for (i, &param) in self.func_data.params().iter().enumerate() {
+            if i < 8 {
+                if let Some(&offset) = self.stack_map.get(&param) {
+                    writeln!(self.writer, "\tsw a{}, {}(sp)", i, offset)?;
+                }
+            } else {
+            }
         }
         for (&bb, node) in self.func_data.layout().bbs() {
             let label = self.get_bb_label(bb);
@@ -120,10 +150,14 @@ impl<'a> AsmGen<'a> {
                             self.load_to_reg(ret_val, "a0")?;
                         }
                         // epilogue
+                        if self.has_call {
+                            writeln!(self.writer, "\tlw ra, {}(sp)", self.stack_size - 4)?;
+                        }
                         if self.stack_size > 0 {
                             writeln!(self.writer, "\taddi sp, sp, {}", self.stack_size)?;
                         }
                         writeln!(self.writer, "\tret")?;
+                        writeln!(self.writer, "")?;
                     }
                     ValueKind::Binary(bin) => {
                         // 获取操作数的寄存器
@@ -182,6 +216,25 @@ impl<'a> AsmGen<'a> {
                     ValueKind::Jump(jmp) => {
                         writeln!(self.writer, "\tj {}", self.get_bb_label(jmp.target()))?;
                     }
+                    ValueKind::Call(call) => {
+                        // 传递参数
+                        for (i, &arg) in call.args().iter().enumerate() {
+                            if i < 8 {
+                                self.load_to_reg(arg, &format!("a{}", i))?;
+                            } else {
+                                todo!("More than 8 arguments not supported yet");
+                            }
+                        }
+                        // 写入调用指令
+                        let func = self.program.func(call.callee());
+                        let name = func.name().trim_start_matches('@');
+                        writeln!(self.writer, "\tcall {}", name)?;
+                        // 处理返回值
+                        let inst_data = self.func_data.dfg().value(inst);
+                        if !inst_data.ty().is_unit() {
+                            self.store_from_reg(inst, "a0")?;
+                        }
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -192,8 +245,9 @@ impl<'a> AsmGen<'a> {
     /// Get the label of a basic block
     fn get_bb_label(&self, bb: BasicBlock) -> String {
         let bb_data = self.func_data.dfg().bb(bb);
-        if let Some(name) = bb_data.name() {
-            name.trim_start_matches("%").to_string()
+        if let Some(bb_name) = bb_data.name() {
+            let func_name = self.func_data.name().trim_start_matches('@');
+            format!("{}_{}", func_name, bb_name.trim_start_matches("%"))
         } else {
             "unknown".to_string()
         }
