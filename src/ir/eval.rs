@@ -41,6 +41,9 @@ impl Eval for UnaryExp {
                     }
                 }
             }
+            UnaryExp::FuncCall(_) => {
+                panic!("Function calls are not supported in constant expressions.")
+            }
         }
     }
 }
@@ -56,6 +59,10 @@ impl Eval for PrimaryExp {
                         Symbol::Const(val) => val,
                         Symbol::Var(_) => panic!(
                             "Error: Variable '{}' cannot be used in a constant expression.",
+                            lval.ident
+                        ),
+                        Symbol::Func(_) => panic!(
+                            "Error: Function '{}' cannot be used in a constant expression.",
                             lval.ident
                         ),
                     }

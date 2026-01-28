@@ -3,7 +3,6 @@ mod ast;
 mod ir;
 
 use crate::asm::GenerateAsm;
-use crate::ast::check_ast;
 use crate::ir::generate_koopa;
 use koopa::back::KoopaGenerator;
 use lalrpop_util::lalrpop_mod;
@@ -32,8 +31,6 @@ fn main() -> Result<()> {
 
     // 输出解析得到的 AST
     println!("{:#?}", ast);
-    // 简单检查一下 AST 是否符合预期
-    check_ast(&ast);
 
     // 使用 Koopa 前端将 AST 转换为中间表示
     let program = generate_koopa(&ast);

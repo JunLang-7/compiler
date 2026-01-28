@@ -18,8 +18,8 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) -> Basic
         Decl::VarDecl(var_decl) => {
             for def in &var_decl.var_defs {
                 // 在栈上分配内存
-                let alloc = ctx.func_data.dfg_mut().new_value().alloc(Type::get_i32());
-                ctx.func_data
+                let alloc = ctx.func_mut().dfg_mut().new_value().alloc(Type::get_i32());
+                ctx.func_mut()
                     .layout_mut()
                     .bb_mut(current_bb)
                     .insts_mut()
@@ -29,8 +29,8 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) -> Basic
                 // 处理初始化值
                 if let Some(init_val) = &def.init_val {
                     let res = generate_exp(ctx, &mut current_bb, &init_val.exp);
-                    let store = ctx.func_data.dfg_mut().new_value().store(res, alloc);
-                    ctx.func_data
+                    let store = ctx.func_mut().dfg_mut().new_value().store(res, alloc);
+                    ctx.func_mut()
                         .layout_mut()
                         .bb_mut(current_bb)
                         .insts_mut()

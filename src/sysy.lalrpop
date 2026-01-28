@@ -14,15 +14,32 @@ match {
 
 // 定义 CompUnit, 其返回值类型为 String
 // parser 在解析完成后的行为是返回 FuncDef 的值
-pub CompUnit: CompUnit = <func_def: FuncDef> => CompUnit { <> };
+pub CompUnit: CompUnit = <items: GlobalItem*> => CompUnit { <> };
+
+GlobalItem: GlobalItem = <func_def: FuncDef> => GlobalItem::FuncDef(<>);
 
 FuncDef: FuncDef = {
-  <func_type: FuncType> <ident: Ident> "(" ")" <block: Block> => {
+  <func_type: FuncType> <ident: Ident> "(" <func_f_parms: (FuncFParms)?> ")" <block: Block> => {
     FuncDef { <> }
   }
 }
 
-FuncType: FuncType = "int" => FuncType::Int;
+FuncType: FuncType = {
+  "int" => FuncType::Int,
+  "void" => FuncType::Void,
+}
+
+FuncFParms: FuncFParms = <func_f_parm: FuncFParm> <mut func_f_parms: ("," <FuncFParm>)*> => {
+  func_f_parms.insert(0, func_f_parm);
+  FuncFParms { func_f_parms }
+};
+
+FuncFParm: FuncFParm = <b_type: BType> <ident: Ident> => FuncFParm { <> };
+
+FuncRParms: FuncRParms = <exp: Exp> <mut exps: ("," <Exp>)*> => {
+  exps.insert(0, exp);
+  FuncRParms { exps }
+};
 
 Block: Block = "{" <block_items: BlockItem*> "}" => Block { <> };
 
@@ -50,6 +67,7 @@ CloseStmt: Stmt = {
 OpenStmt: Stmt = {
   "if" "(" <cond: Exp> ")" <then_stmt: Stmt> => Stmt::If(If { cond, then_stmt: Box::new(then_stmt), else_stmt: None }),
   "if" "(" <cond: Exp> ")" <then_stmt: CloseStmt> "else" <else_stmt: OpenStmt> => Stmt::If(If { cond, then_stmt: Box::new(then_stmt), else_stmt: Some(Box::new(else_stmt)) }),
+  "while" "(" <cond: Exp> ")" <body: OpenStmt> => Stmt::While(While { cond, body: Box::new(body) }),
 }
 
 Exp: Exp = <lor_exp: LOrExp> => Exp { <> };
@@ -65,6 +83,10 @@ Number: i32 = <num: IntConst> => <>;
 UnaryExp: UnaryExp = {
   <primary_exp: PrimaryExp> => UnaryExp::PrimaryExp(<>),
   <unary_op: UnaryOp> <unary_exp: UnaryExp> => UnaryExp::UnaryOp { op: unary_op, exp: Box::new(unary_exp) },
+  <ident: Ident> "(" <func_r_parms: (FuncRParms)?> ")" => UnaryExp::FuncCall(FuncCall {
+    ident,
+    func_r_parms,
+  }),
 }
 
 UnaryOp: UnaryOp = {

@@ -1,4 +1,4 @@
-use koopa::ir::{BasicBlock, FunctionData, Value, ValueKind};
+use koopa::ir::{BasicBlock, Function, FunctionData, Program, Value, ValueKind};
 use std::collections::HashMap;
 
 /// enumerate for symbol table
@@ -6,11 +6,13 @@ use std::collections::HashMap;
 pub enum Symbol {
     Const(i32),
     Var(Value),
+    Func(Function),
 }
 
 /// Context for Koopa IR generation
 pub struct GenContext<'a> {
-    pub func_data: &'a mut FunctionData,
+    pub program: &'a mut Program,
+    pub current_func: Option<Function>,
     pub scopes: Vec<HashMap<String, Symbol>>,
     pub loop_stack: Vec<(BasicBlock, BasicBlock)>, // (continue_bb, break_bb)
     pub if_counter: usize,
@@ -20,6 +22,26 @@ pub struct GenContext<'a> {
 }
 
 impl<'a> GenContext<'a> {
+    /// Create a new GenContext
+    pub fn new(program: &'a mut Program) -> Self {
+        Self {
+            program,
+            current_func: None,
+            scopes: vec![HashMap::new()],
+            loop_stack: vec![],
+            if_counter: 0,
+            while_counter: 0,
+            land_counter: 0,
+            lor_counter: 0,
+        }
+    }
+
+    /// Get mutable reference to the current function data
+    pub fn func_mut(&mut self) -> &mut FunctionData {
+        self.program
+            .func_mut(self.current_func.expect("No current function"))
+    }
+
     /// Enter a new scope
     pub fn enter_scope(&mut self) {
         self.scopes.push(HashMap::new());
@@ -62,10 +84,11 @@ impl<'a> GenContext<'a> {
 
     /// Check if a basic block is terminated
     pub fn is_bb_terminated(&mut self, bb: BasicBlock) -> bool {
-        for (b, node) in self.func_data.layout().bbs() {
+        let func_data = self.func_mut(); // Store mutable reference
+        for (b, node) in func_data.layout().bbs() {
             if *b == bb {
                 if let Some(last_inst) = node.insts().back_key() {
-                    let last = self.func_data.dfg().value(*last_inst);
+                    let last = func_data.dfg().value(*last_inst); // Use stored reference
                     match last.kind() {
                         ValueKind::Return(_) | ValueKind::Branch(_) | ValueKind::Jump(_) => {
                             return true;
@@ -78,5 +101,17 @@ impl<'a> GenContext<'a> {
             }
         }
         false
+    }
+
+    /// Lookup a function by its identifier
+    pub fn lookup_function(&self, ident: &str) -> Option<Function> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(symbol) = scope.get(ident) {
+                if let Symbol::Func(func) = *symbol {
+                    return Some(func);
+                }
+            }
+        }
+        None
     }
 }

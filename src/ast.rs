@@ -1,21 +1,40 @@
 #![allow(dead_code)]
 
+use koopa::ir::Type;
+
 #[derive(Debug)]
 pub struct CompUnit {
-    pub func_def: FuncDef,
+    pub items: Vec<GlobalItem>,
+}
+
+#[derive(Debug)]
+pub enum GlobalItem {
+    FuncDef(FuncDef),
 }
 
 #[derive(Debug)]
 pub struct FuncDef {
     pub func_type: FuncType,
     pub ident: String,
+    pub func_f_parms: Option<FuncFParms>,
     pub block: Block,
 }
 
 #[derive(Debug)]
 pub enum FuncType {
     Int,
+    Void,
 }
+
+impl FuncType {
+    pub fn return_type(&self) -> Type {
+        match self {
+            FuncType::Int => Type::get_i32(),
+            FuncType::Void => Type::get_unit(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Block {
     pub block_items: Vec<BlockItem>,
@@ -48,6 +67,7 @@ pub struct Exp {
 pub enum UnaryExp {
     PrimaryExp(PrimaryExp),
     UnaryOp { op: UnaryOp, exp: Box<UnaryExp> },
+    FuncCall(FuncCall),
 }
 
 #[derive(Debug)]
@@ -170,6 +190,14 @@ pub enum BType {
     Int,
 }
 
+impl BType {
+    pub fn into_type(&self) -> Type {
+        match self {
+            BType::Int => Type::get_i32(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ConstDef {
     pub ident: String,
@@ -233,9 +261,24 @@ pub struct Break;
 #[derive(Debug)]
 pub struct Continue;
 
-/// Check if the AST is valid
-pub fn check_ast(ast: &CompUnit) {
-    if ast.func_def.ident != "main" {
-        panic!("The function name must be 'main'");
-    }
+#[derive(Debug)]
+pub struct FuncFParms {
+    pub func_f_parms: Vec<FuncFParm>,
+}
+
+#[derive(Debug)]
+pub struct FuncFParm {
+    pub b_type: BType,
+    pub ident: String,
+}
+
+#[derive(Debug)]
+pub struct FuncCall {
+    pub ident: String,
+    pub func_r_parms: Option<FuncRParms>,
+}
+
+#[derive(Debug)]
+pub struct FuncRParms {
+    pub exps: Vec<Exp>,
 }
