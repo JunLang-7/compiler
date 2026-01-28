@@ -1,8 +1,7 @@
 use core::panic;
 use koopa::ir::{BasicBlock, BinaryOp, FunctionData, Program, Value, ValueKind};
 use std::{
-    collections::HashMap,
-    io::{Result, Write},
+    collections::HashMap, io::{Result, Write}
 };
 
 /// A trait to generate asm file base on Koopa IR
@@ -45,9 +44,26 @@ impl<'a> AsmGen<'a> {
         func_data: &'a FunctionData,
     ) -> Self {
         let mut stack_map = HashMap::new();
-        let mut offset = 0;
         let mut has_call = false;
+        let mut max_call_args = 0;
 
+        // 先扫描一遍，计算溢出参数空间
+        for (&_bb, node) in func_data.layout().bbs() {
+            for &inst in node.insts().keys() {
+                let val_data = func_data.dfg().value(inst);
+                if let ValueKind::Call(call) = val_data.kind() {
+                    has_call = true;
+                    max_call_args = max_call_args.max(call.args().len() as i32);
+                }
+            }
+        }
+        // 计算底部预留空间
+        let overflow_size = if max_call_args > 8 {
+            (max_call_args - 8) * 4
+        } else {
+            0
+        };
+        let mut offset = overflow_size;
         // 为函数参数分配栈空间
         for (i, &parm) in func_data.params().iter().enumerate() {
             if i < 8 {
@@ -55,12 +71,10 @@ impl<'a> AsmGen<'a> {
                 offset += 4;
             }
         }
+        // 为指令分配栈空间
         for (&_bb, node) in func_data.layout().bbs() {
             for &inst in node.insts().keys() {
                 let val_data = func_data.dfg().value(inst);
-                if let ValueKind::Call(_) = val_data.kind() {
-                    has_call = true;
-                }
                 // 只有返回值非空时才分配内存空间
                 if !val_data.ty().is_unit() {
                     stack_map.insert(inst, offset);
@@ -73,6 +87,13 @@ impl<'a> AsmGen<'a> {
             offset += 4;
         }
         let stack_size = (offset + 15) & !15; // align to 16 bytes
+        // 为溢出参数分配空间
+        for (i, &parm) in func_data.params().iter().enumerate() {
+            if i >= 8 {
+                let parm_offset = stack_size + ((i as i32 - 8) * 4);
+                stack_map.insert(parm, parm_offset);
+            }
+        }
         Self {
             writer,
             program,
@@ -135,7 +156,6 @@ impl<'a> AsmGen<'a> {
                 if let Some(&offset) = self.stack_map.get(&param) {
                     writeln!(self.writer, "\tsw a{}, {}(sp)", i, offset)?;
                 }
-            } else {
             }
         }
         for (&bb, node) in self.func_data.layout().bbs() {
@@ -222,7 +242,9 @@ impl<'a> AsmGen<'a> {
                             if i < 8 {
                                 self.load_to_reg(arg, &format!("a{}", i))?;
                             } else {
-                                todo!("More than 8 arguments not supported yet");
+                                let offset = (i - 8) * 4;
+                                self.load_to_reg(arg, "t0")?;
+                                writeln!(self.writer, "\tsw t0, {}(sp)", offset)?;
                             }
                         }
                         // 写入调用指令
