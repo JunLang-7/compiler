@@ -12,6 +12,28 @@ pub trait GenerateAsm {
 
 impl GenerateAsm for Program {
     fn generate(&self, writer: &mut dyn Write) -> Result<()> {
+        writeln!(writer, "\t.data")?;
+        for &val in self.inst_layout() {
+            let data = self.borrow_value(val);
+            if let ValueKind::GlobalAlloc(alloc) = data.kind() {
+                let name = data.name().as_deref().unwrap().trim_start_matches('@');
+                writeln!(writer, "\t.global {}", name)?;
+                writeln!(writer, "{}:", name)?;
+                // 处理初值
+                let init = alloc.init();
+                match self.borrow_value(init).kind() {
+                    ValueKind::Integer(int) => {
+                        writeln!(writer, "\t.word {}", int.value())?;
+                    }
+                    ValueKind::ZeroInit(_) => {
+                        writeln!(writer, "\t.zero 4")?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        writeln!(writer, "")?;
+
         for &func in self.func_layout() {
             let func_data = self.func(func);
             if func_data.layout().entry_bb().is_none() {
@@ -109,23 +131,39 @@ impl<'a> AsmGen<'a> {
     }
 
     fn load_to_reg(&mut self, val: Value, reg: &str) -> Result<()> {
-        let val_data = self.func_data.dfg().value(val);
-        match val_data.kind() {
-            ValueKind::Integer(int) => {
-                writeln!(self.writer, "\tli {}, {}", reg, int.value())?;
-            }
-            _ => {
-                if let Some(&offset) = self.stack_map.get(&val) {
-                    if offset < -2048 || offset > 2047 {
-                        writeln!(self.writer, "\tli {}, {}", reg, offset)?;
-                        writeln!(self.writer, "\tadd {}, sp, {}", reg, reg)?;
-                        writeln!(self.writer, "\tlw {}, 0({})", reg, reg)?;
-                    } else {
-                        writeln!(self.writer, "\tlw {}, {}(sp)", reg, offset)?;
-                    }
-                } else {
-                    panic!("Value {:?} not found in stack map", val);
+        if self.func_data.dfg().values().contains_key(&val) {
+            let val_data = self.func_data.dfg().value(val);
+            match val_data.kind() {
+                ValueKind::Integer(int) => {
+                    writeln!(self.writer, "\tli {}, {}", reg, int.value())?;
                 }
+                _ => {
+                    if let Some(&offset) = self.stack_map.get(&val) {
+                        if offset < -2048 || offset > 2047 {
+                            writeln!(self.writer, "\tli {}, {}", reg, offset)?;
+                            writeln!(self.writer, "\tadd {}, sp, {}", reg, reg)?;
+                            writeln!(self.writer, "\tlw {}, 0({})", reg, reg)?;
+                        } else {
+                            writeln!(self.writer, "\tlw {}, {}(sp)", reg, offset)?;
+                        }
+                    } else {
+                        panic!("Value {:?} not found in stack map", val);
+                    }
+                }
+            }
+        } else {
+            let global_data = self.program.borrow_value(val);
+            match global_data.kind() {
+                ValueKind::GlobalAlloc(_) => {
+                    let name = global_data
+                        .name()
+                        .as_deref()
+                        .unwrap()
+                        .trim_start_matches('@');
+                    writeln!(self.writer, "\tla {}, {}", reg, name)?;
+                    writeln!(self.writer, "\tlw {}, 0({})", reg, reg)?;
+                }
+                _ => panic!("Unknown value source"),
             }
         }
         Ok(())
@@ -139,6 +177,17 @@ impl<'a> AsmGen<'a> {
                 writeln!(self.writer, "\tsw {}, 0(t3)", reg)?;
             } else {
                 writeln!(self.writer, "\tsw {}, {}(sp)", reg, offset)?;
+            }
+        } else {
+            let global_data = self.program.borrow_value(val);
+            if let ValueKind::GlobalAlloc(_) = global_data.kind() {
+                let name = global_data
+                    .name()
+                    .as_deref()
+                    .unwrap()
+                    .trim_start_matches('@');
+                writeln!(self.writer, "\tla t3, {}", name)?;
+                writeln!(self.writer, "\tsw {}, 0(t3)", reg)?;
             }
         }
         Ok(())
