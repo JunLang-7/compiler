@@ -1,3 +1,7 @@
+int var;
+
+const int one;
+
 int main() {
-  return getint();
+  return var + one;
 }

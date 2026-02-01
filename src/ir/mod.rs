@@ -4,7 +4,7 @@ mod eval;
 mod exp;
 mod stmt;
 
-use crate::ast::{self, Block, BlockItem, FuncDef, GlobalItem};
+use crate::ast::{self, Block, BlockItem, Decl, FuncDef, GlobalItem};
 use decl::generate_decl;
 use koopa::ir::{BasicBlock, FunctionData, Program};
 use koopa::ir::{Type, builder_traits::*};
@@ -50,6 +50,9 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
         match item {
             GlobalItem::FuncDef(func_def) => {
                 generate_func_def(&mut ctx, func_def);
+            }
+            GlobalItem::Decl(decl) => {
+                generate_global_decl(&mut ctx, decl);
             }
         }
     }
@@ -132,6 +135,36 @@ pub fn generate_func_def(ctx: &mut GenContext, func_def: &FuncDef) {
     // 退出作用域并重置当前函数
     ctx.exit_scope();
     ctx.current_func = None;
+}
+
+/// Generate Koopa IR for a global variable declaration
+pub fn generate_global_decl(ctx: &mut GenContext, decl: &Decl) {
+    match decl {
+        Decl::ConstDecl(const_decl) => {
+            for const_def in &const_decl.const_defs {
+                let init = const_def
+                    .const_init_val
+                    .const_exp
+                    .exp
+                    .evaluate(&mut ctx.scopes.last_mut().unwrap());
+                ctx.insert_symbol(const_def.ident.clone(), Symbol::Const(init));
+            }
+        }
+        Decl::VarDecl(var_decl) => {
+            for var_def in &var_decl.var_defs {
+                let init_val = if let Some(val) = &var_def.init_val {
+                    let init = val.exp.evaluate(ctx.scopes.last_mut().unwrap());
+                    ctx.program.new_value().integer(init)
+                } else {
+                    ctx.program.new_value().zero_init(Type::get_i32())
+                };
+                let alloc = ctx.program.new_value().global_alloc(init_val);
+                ctx.program
+                    .set_value_name(alloc, Some(format!("@{}", var_def.ident)));
+                ctx.insert_symbol(var_def.ident.clone(), Symbol::Var(alloc));
+            }
+        }
+    }
 }
 
 /// Generate Koopa IR for a block and return the latest insertion block

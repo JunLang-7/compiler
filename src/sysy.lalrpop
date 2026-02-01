@@ -16,17 +16,19 @@ match {
 // parser 在解析完成后的行为是返回 FuncDef 的值
 pub CompUnit: CompUnit = <items: GlobalItem*> => CompUnit { <> };
 
-GlobalItem: GlobalItem = <func_def: FuncDef> => GlobalItem::FuncDef(<>);
-
-FuncDef: FuncDef = {
-  <func_type: FuncType> <ident: Ident> "(" <func_f_parms: (FuncFParms)?> ")" <block: Block> => {
-    FuncDef { <> }
-  }
+GlobalItem: GlobalItem = {
+  <decl: Decl> => GlobalItem::Decl(<>),
+  <func_def: FuncDef> => GlobalItem::FuncDef(<>),
 }
 
-FuncType: FuncType = {
-  "int" => FuncType::Int,
-  "void" => FuncType::Void,
+FuncDef: FuncDef = {
+  <head: FuncDefHead> ")" <block: Block> => FuncDef {func_type: head.0, ident: head.1, func_f_parms: None, block},
+  <head: FuncDefHead> <func_f_params: FuncFParms> ")" <block: Block> => FuncDef {func_type: head.0, ident: head.1, func_f_parms: Some(func_f_params), block},
+}
+
+FuncDefHead: (FuncType, String) = {
+  "void" <ident: Ident> "(" => (FuncType::Void, ident),
+  <t: BType> <ident: Ident> "(" => (FuncType::Int, ident),
 }
 
 FuncFParms: FuncFParms = <func_f_parm: FuncFParm> <mut func_f_parms: ("," <FuncFParm>)*> => {
@@ -185,7 +187,10 @@ ConstDecl: ConstDecl = "const" <b_type: BType> <const_def: ConstDef> <mut const_
 
 BType: BType = "int" => BType::Int;
 
-ConstDef: ConstDef = <ident: Ident> "=" <const_init_val: ConstInitVal> => ConstDef { <> };
+ConstDef: ConstDef = {
+  <ident: Ident> => ConstDef { ident, const_init_val: ConstInitVal { const_exp: ConstExp { exp: Exp::number(0) } } },
+  <ident: Ident> "=" <const_init_val: ConstInitVal> => ConstDef { <> },
+}
 
 ConstInitVal: ConstInitVal = <const_exp: ConstExp> => ConstInitVal { <> };
 

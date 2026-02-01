@@ -9,6 +9,7 @@ pub struct CompUnit {
 
 #[derive(Debug)]
 pub enum GlobalItem {
+    Decl(Decl),
     FuncDef(FuncDef),
 }
 
@@ -61,6 +62,18 @@ pub enum Stmt {
 #[derive(Debug)]
 pub struct Exp {
     pub lor_exp: LOrExp,
+}
+
+impl Exp {
+    pub fn number(num: i32) -> Self {
+        Self {
+            lor_exp: LOrExp::LAndExp(LAndExp::EqExp(EqExp::RelExp(RelExp::AddExp(
+                AddExp::MulExp(MulExp::UnaryExp(UnaryExp::PrimaryExp(PrimaryExp::Number(
+                    num,
+                )))),
+            )))),
+        }
+    }
 }
 
 #[derive(Debug)]
