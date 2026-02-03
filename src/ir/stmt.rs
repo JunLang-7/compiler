@@ -1,4 +1,4 @@
-use super::{GenContext, Symbol, generate_block, generate_exp};
+use super::{GenContext, Symbol, generate_block, generate_exp, generate_ptr};
 use crate::ast::{Block, Exp, If, LValAssign, Stmt, While};
 use koopa::ir::BasicBlock;
 use koopa::ir::builder_traits::*;
@@ -37,17 +37,36 @@ fn generate_return_stmt(ctx: &mut GenContext, bb: BasicBlock, exp: &Exp) {
 /// Generate variable assignment statement
 fn generate_lval_assign_stmt(ctx: &mut GenContext, bb: &mut BasicBlock, lval_assign: &LValAssign) {
     let LValAssign { lval, exp } = lval_assign;
-    let var = if let Some(symbol) = ctx.lookup_symbol(&lval.ident) {
+    let ptr = if let Some(symbol) = ctx.lookup_symbol(&lval.ident) {
         match symbol {
-            Symbol::Const(_) => unreachable!(),
-            Symbol::Var(var) => var,
-            Symbol::Func(_) => unreachable!(),
+            Symbol::Const(_) => panic!("Cannot assign to constant!"),
+            Symbol::Var(var) => {
+                if lval.indices.is_empty() {
+                    var
+                } else {
+                    // Array access via pointer variable
+                    let load = ctx.func_mut().dfg_mut().new_value().load(var);
+                    ctx.func_mut()
+                        .layout_mut()
+                        .bb_mut(*bb)
+                        .insts_mut()
+                        .push_key_back(load)
+                        .expect("failed to add load instruction");
+                    generate_ptr(ctx, bb, load, &lval.indices, true)
+                }
+            }
+            Symbol::Array(arr) => {
+                // Array variable
+                generate_ptr(ctx, bb, arr, &lval.indices, false)
+            }
+            Symbol::Func(_) => panic!("Cannot assign to function!"),
         }
     } else {
         panic!("Cannot assign a undefined variable!");
     };
+
     let res = generate_exp(ctx, bb, exp);
-    let store = ctx.func_mut().dfg_mut().new_value().store(res, var);
+    let store = ctx.func_mut().dfg_mut().new_value().store(res, ptr);
     ctx.func_mut()
         .layout_mut()
         .bb_mut(*bb)

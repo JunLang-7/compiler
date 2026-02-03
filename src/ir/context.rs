@@ -2,11 +2,12 @@ use koopa::ir::{BasicBlock, Function, FunctionData, Program, Value, ValueKind};
 use std::collections::HashMap;
 
 /// enumerate for symbol table
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Symbol {
     Const(i32),
     Var(Value),
     Func(Function),
+    Array(Value),
 }
 
 /// Context for Koopa IR generation
@@ -50,6 +51,11 @@ impl<'a> GenContext<'a> {
     /// Exit the current scope
     pub fn exit_scope(&mut self) {
         self.scopes.pop();
+    }
+
+    /// Return the symbol table of current scope
+    pub fn symbol_table(&mut self) -> &mut HashMap<String, Symbol> {
+        self.scopes.last_mut().unwrap()
     }
 
     /// Insert a symbol into the current scope

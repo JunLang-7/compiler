@@ -1,7 +1,7 @@
-use super::{GenContext, Symbol};
+use super::{GenContext, Symbol, generate_ptr};
 use crate::ast::*;
 use koopa::ir::{BasicBlock, BinaryOp, Value};
-use koopa::ir::{Type, builder_traits::*};
+use koopa::ir::{Type, TypeKind, builder_traits::*};
 
 /// Generate Koopa IR for an expression
 pub fn generate_exp(ctx: &mut GenContext, bb: &mut BasicBlock, exp: &Exp) -> Value {
@@ -88,7 +88,7 @@ pub fn generate_primary_exp(
                 match symbol {
                     Symbol::Const(val) => ctx.func_mut().dfg_mut().new_value().integer(val),
                     Symbol::Var(val) => {
-                        // 取出变量的值
+                        // Scalar or Pointer variable
                         let load = ctx.func_mut().dfg_mut().new_value().load(val);
                         ctx.func_mut()
                             .layout_mut()
@@ -96,7 +96,20 @@ pub fn generate_primary_exp(
                             .insts_mut()
                             .push_key_back(load)
                             .expect("failed to add load instruction");
-                        load
+
+                        if lval.indices.is_empty() {
+                            load
+                        } else {
+                            // Array access via pointer
+                            let ptr = generate_ptr(ctx, bb, load, &lval.indices, true);
+                            // If ptr points to i32, load it. If array, decay.
+                            load_or_decay(ctx, bb, ptr)
+                        }
+                    }
+                    Symbol::Array(val) => {
+                        // Array variable (address)
+                        let ptr = generate_ptr(ctx, bb, val, &lval.indices, false);
+                        load_or_decay(ctx, bb, ptr)
                     }
                     Symbol::Func(_) => {
                         panic!("Cannot use function as a value!");
@@ -106,6 +119,37 @@ pub fn generate_primary_exp(
                 panic!("Undefined variable: {}", lval.ident);
             }
         }
+    }
+}
+
+fn load_or_decay(ctx: &mut GenContext, bb: &mut BasicBlock, ptr: Value) -> Value {
+    let ptr_ty = ctx.func_mut().dfg().value(ptr).ty().clone();
+    match ptr_ty.kind() {
+        TypeKind::Pointer(inner) => {
+            if matches!(inner.kind(), TypeKind::Array(_, _)) {
+                // Decay array to pointer
+                let zero = ctx.func_mut().dfg_mut().new_value().integer(0);
+                let elem_ptr = ctx.func_mut().dfg_mut().new_value().get_elem_ptr(ptr, zero);
+                ctx.func_mut()
+                    .layout_mut()
+                    .bb_mut(*bb)
+                    .insts_mut()
+                    .push_key_back(elem_ptr)
+                    .expect("failed to add decay instruction");
+                elem_ptr
+            } else {
+                // Load value
+                let load = ctx.func_mut().dfg_mut().new_value().load(ptr);
+                ctx.func_mut()
+                    .layout_mut()
+                    .bb_mut(*bb)
+                    .insts_mut()
+                    .push_key_back(load)
+                    .expect("failed to add load instruction");
+                load
+            }
+        }
+        _ => panic!("Expected pointer type"),
     }
 }
 

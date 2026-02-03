@@ -214,12 +214,14 @@ impl BType {
 #[derive(Debug)]
 pub struct ConstDef {
     pub ident: String,
+    pub dims: Vec<ConstExp>,
     pub const_init_val: ConstInitVal,
 }
 
 #[derive(Debug)]
-pub struct ConstInitVal {
-    pub const_exp: ConstExp,
+pub enum ConstInitVal {
+    Exp(ConstExp),
+    List(Vec<ConstInitVal>),
 }
 
 #[derive(Debug)]
@@ -230,6 +232,7 @@ pub struct ConstExp {
 #[derive(Debug)]
 pub struct LVal {
     pub ident: String,
+    pub indices: Vec<Exp>,
 }
 
 #[derive(Debug)]
@@ -247,12 +250,14 @@ pub struct VarDecl {
 #[derive(Debug)]
 pub struct VarDef {
     pub ident: String,
+    pub dims: Vec<ConstExp>,
     pub init_val: Option<InitVal>,
 }
 
 #[derive(Debug)]
-pub struct InitVal {
-    pub exp: Exp,
+pub enum InitVal {
+    Exp(Exp),
+    List(Vec<InitVal>),
 }
 
 #[derive(Debug)]
@@ -283,6 +288,7 @@ pub struct FuncFParms {
 pub struct FuncFParm {
     pub b_type: BType,
     pub ident: String,
+    pub dims: Option<Vec<ConstExp>>,
 }
 
 #[derive(Debug)]

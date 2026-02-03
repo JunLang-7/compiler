@@ -1,7 +1,6 @@
-int var;
-
-const int one;
+int x[2] = {10, 20};
 
 int main() {
-  return var + one;
+  int arr[5] = {1, 2, 3};
+  return arr[2];
 }

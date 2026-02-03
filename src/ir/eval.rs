@@ -65,6 +65,10 @@ impl Eval for PrimaryExp {
                             "Error: Function '{}' cannot be used in a constant expression.",
                             lval.ident
                         ),
+                        Symbol::Array(_) => panic!(
+                            "Error: Array '{}' cannot be used in a constant expression.",
+                            lval.ident
+                        ),
                     }
                 } else {
                     panic!("Undefined variable: {}", lval.ident);

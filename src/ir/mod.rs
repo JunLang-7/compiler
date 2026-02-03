@@ -3,12 +3,14 @@ mod decl;
 mod eval;
 mod exp;
 mod stmt;
+mod util;
 
-use crate::ast::{self, Block, BlockItem, Decl, FuncDef, GlobalItem};
+use crate::ast::{self, Block, BlockItem, ConstInitVal, Decl, FuncDef, GlobalItem};
 use decl::generate_decl;
 use koopa::ir::{BasicBlock, FunctionData, Program};
 use koopa::ir::{Type, builder_traits::*};
 use stmt::generate_stmt;
+use util::*;
 
 pub use context::{GenContext, Symbol};
 pub use eval::Eval;
@@ -66,10 +68,17 @@ pub fn generate_func_def(ctx: &mut GenContext, func_def: &FuncDef) {
             .func_f_parms
             .iter()
             .map(|parm| {
-                (
-                    Some(format!("@{}", parm.ident.clone())),
-                    parm.b_type.into_type(),
-                )
+                let ty = if let Some(dims) = &parm.dims {
+                    let mut base_ty = parm.b_type.into_type();
+                    for dim in dims.iter().rev() {
+                        let size = dim.exp.evaluate(ctx.symbol_table());
+                        base_ty = Type::get_array(base_ty, size as usize);
+                    }
+                    Type::get_pointer(base_ty)
+                } else {
+                    parm.b_type.into_type()
+                };
+                (Some(format!("@{}", parm.ident.clone())), ty)
             })
             .collect()
     } else {
@@ -99,17 +108,26 @@ pub fn generate_func_def(ctx: &mut GenContext, func_def: &FuncDef) {
     // 处理函数参数
     if let Some(func_f_parms) = &func_def.func_f_parms {
         for (parm, value) in func_f_parms.func_f_parms.iter().zip(parm_val) {
-            let alloc = ctx
-                .func_mut()
-                .dfg_mut()
-                .new_value()
-                .alloc(parm.b_type.into_type());
+            let ty = if let Some(dims) = &parm.dims {
+                let mut base_ty = parm.b_type.into_type();
+                for dim in dims.iter().rev() {
+                    let size = dim.exp.evaluate(ctx.symbol_table());
+                    base_ty = Type::get_array(base_ty, size as usize);
+                }
+                Type::get_pointer(base_ty)
+            } else {
+                parm.b_type.into_type()
+            };
+
+            let alloc = ctx.func_mut().dfg_mut().new_value().alloc(ty);
             let store = ctx.func_mut().dfg_mut().new_value().store(value, alloc);
             ctx.func_mut()
                 .layout_mut()
                 .bb_mut(entry)
                 .insts_mut()
                 .extend([alloc, store]);
+
+            // Treat array parameters as variables (Symbol::Var)
             ctx.insert_symbol(parm.ident.clone(), Symbol::Var(alloc));
         }
     }
@@ -141,27 +159,43 @@ pub fn generate_func_def(ctx: &mut GenContext, func_def: &FuncDef) {
 pub fn generate_global_decl(ctx: &mut GenContext, decl: &Decl) {
     match decl {
         Decl::ConstDecl(const_decl) => {
-            for const_def in &const_decl.const_defs {
-                let init = const_def
-                    .const_init_val
-                    .const_exp
-                    .exp
-                    .evaluate(&mut ctx.scopes.last_mut().unwrap());
-                ctx.insert_symbol(const_def.ident.clone(), Symbol::Const(init));
+            for def in &const_decl.const_defs {
+                let ty = get_array_type(ctx, Type::get_i32(), &def.dims);
+                if def.dims.is_empty() {
+                    // Scalar
+                    if let ConstInitVal::Exp(const_exp) = &def.const_init_val {
+                        let val = const_exp.exp.evaluate(ctx.symbol_table());
+                        ctx.insert_symbol(def.ident.clone(), Symbol::Const(val));
+                    } else {
+                        panic!("Scalar constant initialized with list");
+                    }
+                } else {
+                    // Array
+                    let init_val = generate_global_const_init_val(ctx, &def.const_init_val, &ty);
+                    let alloc = ctx.program.new_value().global_alloc(init_val);
+                    ctx.program
+                        .set_value_name(alloc, Some(format!("@{}", def.ident)));
+                    ctx.insert_symbol(def.ident.clone(), Symbol::Array(alloc));
+                }
             }
         }
         Decl::VarDecl(var_decl) => {
-            for var_def in &var_decl.var_defs {
-                let init_val = if let Some(val) = &var_def.init_val {
-                    let init = val.exp.evaluate(ctx.scopes.last_mut().unwrap());
-                    ctx.program.new_value().integer(init)
+            for def in &var_decl.var_defs {
+                let ty = get_array_type(ctx, Type::get_i32(), &def.dims);
+                let init_val = if let Some(init) = &def.init_val {
+                    generate_global_init_val(ctx, init, &ty)
                 } else {
-                    ctx.program.new_value().zero_init(Type::get_i32())
+                    generate_global_zero_init(ctx, &ty)
                 };
                 let alloc = ctx.program.new_value().global_alloc(init_val);
                 ctx.program
-                    .set_value_name(alloc, Some(format!("@{}", var_def.ident)));
-                ctx.insert_symbol(var_def.ident.clone(), Symbol::Var(alloc));
+                    .set_value_name(alloc, Some(format!("@{}", def.ident)));
+
+                if def.dims.is_empty() {
+                    ctx.insert_symbol(def.ident.clone(), Symbol::Var(alloc));
+                } else {
+                    ctx.insert_symbol(def.ident.clone(), Symbol::Array(alloc));
+                }
             }
         }
     }

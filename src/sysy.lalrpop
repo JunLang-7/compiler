@@ -36,7 +36,10 @@ FuncFParms: FuncFParms = <func_f_parm: FuncFParm> <mut func_f_parms: ("," <FuncF
   FuncFParms { func_f_parms }
 };
 
-FuncFParm: FuncFParm = <b_type: BType> <ident: Ident> => FuncFParm { <> };
+FuncFParm: FuncFParm = {
+  <b_type: BType> <ident: Ident> => FuncFParm { b_type, ident, dims: None },
+  <b_type: BType> <ident: Ident> "[" "]" <dims: ("[" <ConstExp> "]")*> => FuncFParm { b_type, ident, dims: Some(dims) },
+}
 
 FuncRParms: FuncRParms = <exp: Exp> <mut exps: ("," <Exp>)*> => {
   exps.insert(0, exp);
@@ -188,13 +191,20 @@ ConstDecl: ConstDecl = "const" <b_type: BType> <const_def: ConstDef> <mut const_
 BType: BType = "int" => BType::Int;
 
 ConstDef: ConstDef = {
-  <ident: Ident> => ConstDef { ident, const_init_val: ConstInitVal { const_exp: ConstExp { exp: Exp::number(0) } } },
-  <ident: Ident> "=" <const_init_val: ConstInitVal> => ConstDef { <> },
+  <ident: Ident> <dims: ("[" <ConstExp> "]")*> => ConstDef { ident, dims, const_init_val: ConstInitVal::Exp(ConstExp { exp: Exp::number(0) }) },
+  <ident: Ident> <dims: ("[" <ConstExp> "]")*> "=" <const_init_val: ConstInitVal> => ConstDef { <> },
 }
 
-ConstInitVal: ConstInitVal = <const_exp: ConstExp> => ConstInitVal { <> };
+ConstInitVal: ConstInitVal = {
+  <const_exp: ConstExp> => ConstInitVal::Exp(<>),
+  "{" "}" => ConstInitVal::List(Vec::new()),
+  "{" <init: ConstInitVal> <mut inits: ("," <ConstInitVal>)*> "}" => {
+    inits.insert(0, init);
+    ConstInitVal::List(inits)
+  },
+}
 
-LVal: LVal = <ident: Ident> => LVal { <> };
+LVal: LVal = <ident: Ident> <indices: ("[" <Exp> "]")*> => LVal { <> };
 
 ConstExp: ConstExp = <exp: Exp> => ConstExp { <> };
 
@@ -204,11 +214,18 @@ VarDecl: VarDecl = <b_type: BType> <var_def: VarDef> <mut var_defs: ("," <VarDef
 };
 
 VarDef: VarDef = {
-  <ident: Ident> => VarDef { ident, init_val: None },
-  <ident: Ident> "=" <init_val: InitVal> => VarDef { ident, init_val: Some(init_val) },
+  <ident: Ident> <dims: ("[" <ConstExp> "]")*> => VarDef { ident, dims, init_val: None },
+  <ident: Ident> <dims: ("[" <ConstExp> "]")*> "=" <init_val: InitVal> => VarDef { ident, dims, init_val: Some(init_val) },
 }
 
-InitVal: InitVal = <exp: Exp> => InitVal { <> };
+InitVal: InitVal = {
+  <exp: Exp> => InitVal::Exp(<>),
+  "{" "}" => InitVal::List(Vec::new()),
+  "{" <init: InitVal> <mut inits: ("," <InitVal>)*> "}" => {
+    inits.insert(0, init);
+    InitVal::List(inits)
+  },
+}
 
 // 如果匹配到标识符, 就返回这个字符串
 // 一对尖括号在此处指代的是正则表达式匹配到的字符串 (&str)
