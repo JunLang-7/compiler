@@ -1,5 +1,5 @@
 use core::panic;
-use koopa::ir::{BasicBlock, BinaryOp, FunctionData, Program, Value, ValueKind};
+use koopa::ir::{BasicBlock, BinaryOp, FunctionData, Program, Type, TypeKind, Value, ValueKind};
 use std::{
     collections::HashMap,
     io::{Result, Write},
@@ -21,15 +21,7 @@ impl GenerateAsm for Program {
                 writeln!(writer, "{}:", name)?;
                 // 处理初值
                 let init = alloc.init();
-                match self.borrow_value(init).kind() {
-                    ValueKind::Integer(int) => {
-                        writeln!(writer, "\t.word {}", int.value())?;
-                    }
-                    ValueKind::ZeroInit(_) => {
-                        writeln!(writer, "\t.zero 4")?;
-                    }
-                    _ => {}
-                }
+                generate_global_init(self, writer, init)?;
             }
         }
         writeln!(writer, "")?;
@@ -49,6 +41,27 @@ impl GenerateAsm for Program {
         }
         Ok(())
     }
+}
+
+/// Generate global variable initial value
+fn generate_global_init(program: &Program, writer: &mut dyn Write, init: Value) -> Result<()> {
+    let val_data = program.borrow_value(init);
+    match val_data.kind() {
+        ValueKind::Integer(int) => {
+            writeln!(writer, "\t.word {}", int.value())?;
+        }
+        ValueKind::ZeroInit(_) => {
+            let size = calc_type_size(val_data.ty());
+            writeln!(writer, "\t.zero {}", size)?;
+        }
+        ValueKind::Aggregate(agg) => {
+            for elem in agg.elems() {
+                generate_global_init(program, writer, *elem)?;
+            }
+        }
+        _ => panic!("Invaild global init value"),
+    }
+    Ok(())
 }
 
 /// Asm generator
@@ -103,8 +116,19 @@ impl<'a> AsmGen<'a> {
                 let val_data = func_data.dfg().value(inst);
                 // 只有返回值非空时才分配内存空间
                 if !val_data.ty().is_unit() {
-                    stack_map.insert(inst, offset);
-                    offset += 4;
+                    if let ValueKind::Alloc(_) = val_data.kind() {
+                        let ty = val_data.ty();
+                        let base_ty = match ty.kind() {
+                            TypeKind::Pointer(t) => t,
+                            _ => panic!("Alloc must be pointer type"),
+                        };
+                        let size = calc_type_size(base_ty) as i32;
+                        stack_map.insert(inst, offset);
+                        offset += size;
+                    } else {
+                        stack_map.insert(inst, offset);
+                        offset += 4;
+                    }
                 }
             }
         }
@@ -130,22 +154,30 @@ impl<'a> AsmGen<'a> {
         }
     }
 
+    /// Load a value into a register
     fn load_to_reg(&mut self, val: Value, reg: &str) -> Result<()> {
         if self.func_data.dfg().values().contains_key(&val) {
             let val_data = self.func_data.dfg().value(val);
             match val_data.kind() {
                 ValueKind::Integer(int) => {
-                    writeln!(self.writer, "\tli {}, {}", reg, int.value())?;
+                    let int_val = int.value();
+                    writeln!(self.writer, "\tli {}, {}", reg, int_val)?;
                 }
-                _ => {
+                ValueKind::Alloc(_) => {
                     if let Some(&offset) = self.stack_map.get(&val) {
                         if offset < -2048 || offset > 2047 {
                             writeln!(self.writer, "\tli {}, {}", reg, offset)?;
-                            writeln!(self.writer, "\tadd {}, sp, {}", reg, reg)?;
-                            writeln!(self.writer, "\tlw {}, 0({})", reg, reg)?;
+                            writeln!(self.writer, "\tadd {}, {}, sp", reg, reg)?;
                         } else {
-                            writeln!(self.writer, "\tlw {}, {}(sp)", reg, offset)?;
+                            writeln!(self.writer, "\taddi {}, sp, {}", reg, offset)?;
                         }
+                    } else {
+                        panic!("Value {:?} not found in stack map", val);
+                    }
+                }
+                _ => {
+                    if let Some(&offset) = self.stack_map.get(&val) {
+                        self.safe_lw(reg, offset)?;
                     } else {
                         panic!("Value {:?} not found in stack map", val);
                     }
@@ -161,7 +193,6 @@ impl<'a> AsmGen<'a> {
                         .unwrap()
                         .trim_start_matches('@');
                     writeln!(self.writer, "\tla {}, {}", reg, name)?;
-                    writeln!(self.writer, "\tlw {}, 0({})", reg, reg)?;
                 }
                 _ => panic!("Unknown value source"),
             }
@@ -169,15 +200,10 @@ impl<'a> AsmGen<'a> {
         Ok(())
     }
 
+    /// Store a register value into a value
     fn store_from_reg(&mut self, val: Value, reg: &str) -> Result<()> {
         if let Some(&offset) = self.stack_map.get(&val) {
-            if offset < -2048 || offset > 2047 {
-                writeln!(self.writer, "\tli t3, {}", offset)?;
-                writeln!(self.writer, "\tadd t3, sp, t3")?;
-                writeln!(self.writer, "\tsw {}, 0(t3)", reg)?;
-            } else {
-                writeln!(self.writer, "\tsw {}, {}(sp)", reg, offset)?;
-            }
+            self.safe_sw(reg, offset)?;
         } else {
             let global_data = self.program.borrow_value(val);
             if let ValueKind::GlobalAlloc(_) = global_data.kind() {
@@ -197,9 +223,14 @@ impl<'a> AsmGen<'a> {
     pub fn generate(&mut self) -> Result<()> {
         // prologue
         if self.stack_size > 0 {
-            writeln!(self.writer, "\taddi sp, sp, -{}", self.stack_size)?;
+            if self.stack_size < -2048 || self.stack_size > 2047 {
+                writeln!(self.writer, "\tli t0, -{}", self.stack_size)?;
+                writeln!(self.writer, "\tadd sp, sp, t0")?;
+            } else {
+                writeln!(self.writer, "\taddi sp, sp, -{}", self.stack_size)?;
+            }
             if self.has_call {
-                writeln!(self.writer, "\tsw ra, {}(sp)", self.stack_size - 4)?;
+                self.safe_sw("ra", self.stack_size - 4)?;
             }
         }
 
@@ -224,10 +255,15 @@ impl<'a> AsmGen<'a> {
                         }
                         // epilogue
                         if self.has_call {
-                            writeln!(self.writer, "\tlw ra, {}(sp)", self.stack_size - 4)?;
+                            self.safe_lw("ra", self.stack_size - 4)?;
                         }
                         if self.stack_size > 0 {
-                            writeln!(self.writer, "\taddi sp, sp, {}", self.stack_size)?;
+                            if self.stack_size < -2048 || self.stack_size > 2047 {
+                                writeln!(self.writer, "\tli t0, {}", self.stack_size)?;
+                                writeln!(self.writer, "\tadd sp, sp, t0")?;
+                            } else {
+                                writeln!(self.writer, "\taddi sp, sp, {}", self.stack_size)?;
+                            }
                         }
                         writeln!(self.writer, "\tret")?;
                         writeln!(self.writer, "")?;
@@ -270,11 +306,13 @@ impl<'a> AsmGen<'a> {
                     ValueKind::Alloc(_) => {}
                     ValueKind::Load(load) => {
                         self.load_to_reg(load.src(), "t0")?;
+                        writeln!(self.writer, "\tlw t0, 0(t0)")?;
                         self.store_from_reg(inst, "t0")?;
                     }
                     ValueKind::Store(store) => {
                         self.load_to_reg(store.value(), "t0")?;
-                        self.store_from_reg(store.dest(), "t0")?;
+                        self.load_to_reg(store.dest(), "t1")?;
+                        writeln!(self.writer, "\tsw t0, 0(t1)")?;
                     }
                     ValueKind::Branch(branch) => {
                         let cond = branch.cond();
@@ -310,6 +348,33 @@ impl<'a> AsmGen<'a> {
                             self.store_from_reg(inst, "a0")?;
                         }
                     }
+                    ValueKind::GetElemPtr(gep) => {
+                        self.load_to_reg(gep.src(), "t0")?;
+                        self.load_to_reg(gep.index(), "t1")?;
+                        let src_ty = self.func_data.dfg().value(gep.src()).ty().clone();
+                        let ptr_ty = match src_ty.kind() {
+                            TypeKind::Pointer(base) => base,
+                            _ => panic!("GetElemPtr src must be a pointer"),
+                        };
+                        let arr_ty = match ptr_ty.kind() {
+                            TypeKind::Array(base, _) => base,
+                            _ => panic!("GetElemPtr src must point to an array"),
+                        };
+                        let elem_size = calc_type_size(arr_ty);
+
+                        // calcuate offset
+                        if elem_size == 4 {
+                            writeln!(self.writer, "\tslli t1, t1, 2")?;
+                        } else {
+                            writeln!(self.writer, "\tli t2, {}", elem_size)?;
+                            writeln!(self.writer, "\tmul t1, t1, t2")?;
+                        }
+
+                        // calcuate result
+                        writeln!(self.writer, "\tadd t0, t0, t1")?;
+
+                        self.store_from_reg(inst, "t0")?;
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -326,5 +391,40 @@ impl<'a> AsmGen<'a> {
         } else {
             "unknown".to_string()
         }
+    }
+
+    /// Safely load a value from stack into register with offset checking
+    fn safe_lw(&mut self, src: &str, offset: i32) -> Result<()> {
+        if offset < -2048 || offset > 2047 {
+            writeln!(self.writer, "\tli t3, {}", offset)?;
+            writeln!(self.writer, "\tadd t3, t3, sp")?;
+            writeln!(self.writer, "\tlw {}, 0(t3)", src)?;
+        } else {
+            writeln!(self.writer, "\tlw {}, {}(sp)", src, offset)?;
+        }
+        Ok(())
+    }
+
+    /// Safely store a register value into stack with offset checking
+    fn safe_sw(&mut self, src: &str, offset: i32) -> Result<()> {
+        if offset < -2048 || offset > 2047 {
+            writeln!(self.writer, "\tli t3, {}", offset)?;
+            writeln!(self.writer, "\tadd t3, t3, sp")?;
+            writeln!(self.writer, "\tsw {}, 0(t3)", src)?;
+        } else {
+            writeln!(self.writer, "\tsw {}, {}(sp)", src, offset)?;
+        }
+        Ok(())
+    }
+}
+
+/// Calcuate size of `Type` of RVI32
+fn calc_type_size(ty: &Type) -> usize {
+    match ty.kind() {
+        TypeKind::Int32 => 4,
+        TypeKind::Unit => 0,
+        TypeKind::Array(base, len) => calc_type_size(base) * len,
+        TypeKind::Pointer(_) => 4,
+        _ => 0,
     }
 }
