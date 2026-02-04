@@ -59,7 +59,7 @@ Stmt: Stmt = {
 }
 
 CloseStmt: Stmt = {
-  "return" <exp: Exp>";" => Stmt::Return(exp),
+  "return" <exp: (Exp)?> ";" => Stmt::Return(exp),
   <lval: LVal> "=" <exp: Exp> ";" => Stmt::LValAssign(LValAssign { lval, exp }),
   <block: Block> => Stmt::Block(<>),
   <exp: (Exp)?> ";" => Stmt::Exp(<>),

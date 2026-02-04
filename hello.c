@@ -1,6 +1,5 @@
-int x[2] = {10, 20};
+int arr[2][3][4] = {1, 2, 3, 4, {5}, {6}, {7, 8}};
 
 int main() {
-  int arr[5] = {1, 2, 3};
-  return arr[2];
+    return arr[1][1][2];
 }

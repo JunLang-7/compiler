@@ -2,18 +2,18 @@
 
 use koopa::ir::Type;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompUnit {
     pub items: Vec<GlobalItem>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum GlobalItem {
     Decl(Decl),
     FuncDef(FuncDef),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FuncDef {
     pub func_type: FuncType,
     pub ident: String,
@@ -21,7 +21,7 @@ pub struct FuncDef {
     pub block: Block,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FuncType {
     Int,
     Void,
@@ -36,20 +36,20 @@ impl FuncType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub block_items: Vec<BlockItem>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BlockItem {
     Decl(Decl),
     Stmt(Stmt),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Stmt {
-    Return(Exp),
+    Return(Option<Exp>),
     LValAssign(LValAssign),
     Block(Block),
     Exp(Option<Exp>),
@@ -59,7 +59,7 @@ pub enum Stmt {
     Continue(Continue),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Exp {
     pub lor_exp: LOrExp,
 }
@@ -76,28 +76,28 @@ impl Exp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UnaryExp {
     PrimaryExp(PrimaryExp),
     UnaryOp { op: UnaryOp, exp: Box<UnaryExp> },
     FuncCall(FuncCall),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PrimaryExp {
     Exp(Box<Exp>),
     Number(i32),
     LVal(Box<LVal>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UnaryOp {
     Plus,
     Minus,
     Not,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AddExp {
     MulExp(MulExp),
     AddOp {
@@ -107,7 +107,7 @@ pub enum AddExp {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MulExp {
     UnaryExp(UnaryExp),
     MulOp {
@@ -117,20 +117,20 @@ pub enum MulExp {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MulOp {
     Mul,
     Div,
     Mod,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AddOp {
     Plus,
     Minus,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RelExp {
     AddExp(AddExp),
     RelOp {
@@ -140,7 +140,7 @@ pub enum RelExp {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EqExp {
     RelExp(RelExp),
     EqOp {
@@ -150,19 +150,19 @@ pub enum EqExp {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum LAndExp {
     EqExp(EqExp),
     LAndOp { lhs: Box<LAndExp>, rhs: Box<EqExp> },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum LOrExp {
     LAndExp(LAndExp),
     LOrOp { lhs: Box<LOrExp>, rhs: Box<LAndExp> },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RelOp {
     Lt,
     Gt,
@@ -170,35 +170,35 @@ pub enum RelOp {
     Ge,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EqOp {
     Eq,
     Ne,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum LAndOp {
     And,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum LOrOp {
     Or,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Decl {
     ConstDecl(ConstDecl),
     VarDecl(VarDecl),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConstDecl {
     pub b_type: BType,
     pub const_defs: Vec<ConstDef>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BType {
     Int,
 }
@@ -211,93 +211,93 @@ impl BType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConstDef {
     pub ident: String,
     pub dims: Vec<ConstExp>,
     pub const_init_val: ConstInitVal,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ConstInitVal {
     Exp(ConstExp),
     List(Vec<ConstInitVal>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConstExp {
     pub exp: Exp,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LVal {
     pub ident: String,
     pub indices: Vec<Exp>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LValAssign {
     pub lval: LVal,
     pub exp: Exp,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VarDecl {
     pub b_type: BType,
     pub var_defs: Vec<VarDef>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VarDef {
     pub ident: String,
     pub dims: Vec<ConstExp>,
     pub init_val: Option<InitVal>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InitVal {
     Exp(Exp),
     List(Vec<InitVal>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct If {
     pub cond: Exp,
     pub then_stmt: Box<Stmt>,
     pub else_stmt: Option<Box<Stmt>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct While {
     pub cond: Exp,
     pub body: Box<Stmt>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Break;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Continue;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FuncFParms {
     pub func_f_parms: Vec<FuncFParm>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FuncFParm {
     pub b_type: BType,
     pub ident: String,
     pub dims: Option<Vec<ConstExp>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FuncCall {
     pub ident: String,
     pub func_r_parms: Option<FuncRParms>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FuncRParms {
     pub exps: Vec<Exp>,
 }

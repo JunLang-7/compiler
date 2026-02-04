@@ -7,7 +7,7 @@ use koopa::ir::builder_traits::*;
 pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> BasicBlock {
     let mut current_bb = bb;
     match stmt {
-        Stmt::Return(exp) => generate_return_stmt(ctx, current_bb, exp),
+        Stmt::Return(ret_exp) => generate_return_stmt(ctx, current_bb, ret_exp),
         Stmt::LValAssign(lval_assign) => {
             generate_lval_assign_stmt(ctx, &mut current_bb, lval_assign)
         }
@@ -22,16 +22,37 @@ pub fn generate_stmt(ctx: &mut GenContext, bb: BasicBlock, stmt: &Stmt) -> Basic
 }
 
 /// Generate return statement
-fn generate_return_stmt(ctx: &mut GenContext, bb: BasicBlock, exp: &Exp) {
-    let mut current_bb = bb;
-    let ret_val = generate_exp(ctx, &mut current_bb, exp);
-    let ret = ctx.func_mut().dfg_mut().new_value().ret(Some(ret_val));
-    ctx.func_mut()
-        .layout_mut()
-        .bb_mut(current_bb)
-        .insts_mut()
-        .push_key_back(ret)
-        .expect("fail to push return value");
+fn generate_return_stmt(ctx: &mut GenContext, bb: BasicBlock, ret_exp: &Option<Exp>) {
+    let ret_ty = ctx
+        .current_ret_ty
+        .clone()
+        .expect("Missing current function return type");
+
+    if ret_ty.is_unit() {
+        if ret_exp.is_some() {
+            panic!("Void function cannot return a value");
+        }
+        let ret = ctx.func_mut().dfg_mut().new_value().ret(None);
+        ctx.func_mut()
+            .layout_mut()
+            .bb_mut(bb)
+            .insts_mut()
+            .push_key_back(ret)
+            .expect("fail to push return");
+    } else {
+        let exp = ret_exp
+            .as_ref()
+            .expect("Non-void function must return a value");
+        let mut current_bb = bb;
+        let ret_val = generate_exp(ctx, &mut current_bb, exp);
+        let ret = ctx.func_mut().dfg_mut().new_value().ret(Some(ret_val));
+        ctx.func_mut()
+            .layout_mut()
+            .bb_mut(current_bb)
+            .insts_mut()
+            .push_key_back(ret)
+            .expect("fail to push return value");
+    }
 }
 
 /// Generate variable assignment statement

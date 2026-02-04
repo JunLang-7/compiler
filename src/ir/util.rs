@@ -55,29 +55,143 @@ pub fn generate_ptr(
     ptr
 }
 
-/// Generate initialization value for global variable
-pub fn generate_global_init_val(ctx: &mut GenContext, init: &InitVal, ty: &Type) -> Value {
+/// Struct to help flatten multi-dimensional arrays
+pub struct ArrayFlattener {
+    /// strides for each dimension
+    pub strides: Vec<usize>,
+    /// Total capacity of the array
+    pub total_capacity: usize,
+}
+
+impl ArrayFlattener {
+    /// Create a new ArrayFlattener given the dimensions
+    pub fn new(dims: &[i32]) -> Self {
+        let mut strides = Vec::new();
+        let mut current_size = 1;
+
+        for &dim in dims.iter().rev() {
+            current_size *= dim as usize;
+            strides.push(current_size);
+        }
+        // Remove the last stride as it's not needed
+        if !strides.is_empty() {
+            strides.pop();
+        }
+        // Reverse to maintain the correct order
+        strides.reverse();
+        Self {
+            strides,
+            total_capacity: current_size,
+        }
+    }
+}
+
+/// Flatten the given initialization values for variables
+pub fn flatten_var(ctx: &mut GenContext, init: &InitVal, dims: &[i32]) -> Vec<Exp> {
+    let flattener = ArrayFlattener::new(dims);
+    let mut result = Vec::new();
+    flatten_var_helper(ctx, init, &flattener, &mut result);
+    while result.len() < flattener.total_capacity {
+        result.push(Exp::number(0));
+    }
+    result
+}
+
+fn flatten_var_helper(
+    ctx: &mut GenContext,
+    init: &InitVal,
+    flattener: &ArrayFlattener,
+    result: &mut Vec<Exp>,
+) {
     match init {
         InitVal::Exp(exp) => {
-            let val = exp.evaluate(ctx.symbol_table());
-            ctx.program.new_value().integer(val)
+            result.push(exp.clone());
         }
         InitVal::List(list) => {
-            let mut elems = Vec::new();
-            if let TypeKind::Array(elem_ty, len) = ty.kind() {
-                for i in 0..*len {
-                    if i < list.len() {
-                        elems.push(generate_global_init_val(ctx, &list[i], elem_ty));
-                    } else {
-                        elems.push(generate_global_zero_init(ctx, elem_ty));
-                    }
+            let current_pos = result.len();
+            let mut aligned_stride = 0;
+            // try to find the max stride that can divide current_pos
+            for &stride in &flattener.strides {
+                if current_pos % stride == 0 {
+                    aligned_stride = stride;
+                    break;
                 }
-                ctx.program.new_value().aggregate(elems)
-            } else {
-                panic!("Type mismatch for list initializer");
+            }
+
+            for item in list {
+                flatten_var_helper(ctx, item, flattener, result);
+            }
+
+            // Padding with zeros if necessary
+            if aligned_stride > 0 {
+                let target_len =
+                    (result.len() + aligned_stride - 1) / aligned_stride * aligned_stride;
+                while result.len() < target_len && result.len() < flattener.total_capacity {
+                    result.push(Exp::number(0));
+                }
             }
         }
     }
+}
+
+/// Flatten the given initialization values for constants
+pub fn flatten_const(ctx: &mut GenContext, init: &ConstInitVal, dims: &[i32]) -> Vec<i32> {
+    let flattener = ArrayFlattener::new(dims);
+    let mut result = Vec::new();
+    flatten_const_helper(ctx, init, &flattener, &mut result);
+    while result.len() < flattener.total_capacity {
+        result.push(0);
+    }
+    result
+}
+
+fn flatten_const_helper(
+    ctx: &mut GenContext,
+    init: &ConstInitVal,
+    flattener: &ArrayFlattener,
+    result: &mut Vec<i32>,
+) {
+    match init {
+        ConstInitVal::Exp(const_exp) => {
+            let val = const_exp.exp.evaluate(ctx.symbol_table());
+            result.push(val);
+        }
+        ConstInitVal::List(list) => {
+            let current_pos = result.len();
+            let mut aligned_stride = 0;
+            // try to find the max stride that can divide current_pos
+            for &stride in &flattener.strides {
+                if current_pos % stride == 0 {
+                    aligned_stride = stride;
+                    break;
+                }
+            }
+
+            for item in list {
+                flatten_const_helper(ctx, item, flattener, result);
+            }
+
+            // Padding with zeros if necessary
+            if aligned_stride > 0 {
+                let target_len =
+                    (result.len() + aligned_stride - 1) / aligned_stride * aligned_stride;
+                while result.len() < target_len && result.len() < flattener.total_capacity {
+                    result.push(0);
+                }
+            }
+        }
+    }
+}
+
+/// Generate initialization value for global variable
+pub fn generate_global_init_val(ctx: &mut GenContext, init: &InitVal, ty: &Type) -> Value {
+    let dims = get_type_dims(ty);
+    let flat_exps = flatten_var(ctx, init, &dims);
+    let mut flat_vals = Vec::new();
+    for exp in flat_exps {
+        flat_vals.push(exp.evaluate(ctx.symbol_table()));
+    }
+    build_aggregate_value(ctx, &flat_vals, &dims)
 }
 
 /// Generate initialization value for global constant
@@ -86,27 +200,37 @@ pub fn generate_global_const_init_val(
     init: &ConstInitVal,
     ty: &Type,
 ) -> Value {
-    match init {
-        ConstInitVal::Exp(exp) => {
-            let val = exp.exp.evaluate(ctx.symbol_table());
-            ctx.program.new_value().integer(val)
-        }
-        ConstInitVal::List(list) => {
-            let mut elems = Vec::new();
-            if let TypeKind::Array(elem_ty, len) = ty.kind() {
-                for i in 0..*len {
-                    if i < list.len() {
-                        elems.push(generate_global_const_init_val(ctx, &list[i], elem_ty));
-                    } else {
-                        elems.push(generate_global_zero_init(ctx, elem_ty));
-                    }
-                }
-                ctx.program.new_value().aggregate(elems)
-            } else {
-                panic!("Type mismatch for list initializer");
-            }
-        }
+    let dims = get_type_dims(ty);
+    let flat_vals = flatten_const(ctx, init, &dims);
+    build_aggregate_value(ctx, &flat_vals, &dims)
+}
+
+fn get_type_dims(mut ty: &Type) -> Vec<i32> {
+    let mut dims = Vec::new();
+    while let TypeKind::Array(base, len) = ty.kind() {
+        dims.push(*len as i32);
+        ty = base;
     }
+    dims
+}
+
+/// Build aggregate value from flattened values and dimensions
+pub fn build_aggregate_value(ctx: &mut GenContext, flat_vals: &[i32], dims: &[i32]) -> Value {
+    if dims.is_empty() {
+        return ctx.program.new_value().integer(flat_vals[0]);
+    }
+
+    let cur_dim = dims[0] as usize;
+    let sub_dims = &dims[1..];
+    let chunk_size = flat_vals.len() / cur_dim;
+    let mut elems = Vec::new();
+
+    for i in 0..cur_dim {
+        let start = i * chunk_size;
+        let end = start + chunk_size;
+        elems.push(build_aggregate_value(ctx, &flat_vals[start..end], sub_dims));
+    }
+    ctx.program.new_value().aggregate(elems)
 }
 
 /// Generate zero initialization for global variable

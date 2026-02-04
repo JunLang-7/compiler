@@ -1,4 +1,4 @@
-use koopa::ir::{BasicBlock, Function, FunctionData, Program, Value, ValueKind};
+use koopa::ir::{BasicBlock, Function, FunctionData, Program, Type, Value, ValueKind};
 use std::collections::HashMap;
 
 /// enumerate for symbol table
@@ -14,6 +14,7 @@ pub enum Symbol {
 pub struct GenContext<'a> {
     pub program: &'a mut Program,
     pub current_func: Option<Function>,
+    pub current_ret_ty: Option<Type>,
     pub scopes: Vec<HashMap<String, Symbol>>,
     pub loop_stack: Vec<(BasicBlock, BasicBlock)>, // (continue_bb, break_bb)
     pub if_counter: usize,
@@ -28,6 +29,7 @@ impl<'a> GenContext<'a> {
         Self {
             program,
             current_func: None,
+            current_ret_ty: None,
             scopes: vec![HashMap::new()],
             loop_stack: vec![],
             if_counter: 0,

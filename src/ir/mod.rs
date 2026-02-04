@@ -92,6 +92,7 @@ pub fn generate_func_def(ctx: &mut GenContext, func_def: &FuncDef) {
     ctx.insert_symbol(func_def.ident.clone(), Symbol::Func(func));
     // 设置当前函数与作用域
     ctx.current_func = Some(func);
+    ctx.current_ret_ty = Some(ret_ty.clone());
     ctx.enter_scope();
     // 在函数中创建一个基本块(entry basic block)
     let entry = ctx
@@ -152,6 +153,7 @@ pub fn generate_func_def(ctx: &mut GenContext, func_def: &FuncDef) {
 
     // 退出作用域并重置当前函数
     ctx.exit_scope();
+    ctx.current_ret_ty = None;
     ctx.current_func = None;
 }
 
