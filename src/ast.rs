@@ -11,6 +11,7 @@ pub struct CompUnit {
 pub enum GlobalItem {
     Decl(Decl),
     FuncDef(FuncDef),
+    FuncDecl(FuncDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +20,13 @@ pub struct FuncDef {
     pub ident: String,
     pub func_f_parms: Option<FuncFParms>,
     pub block: Block,
+}
+
+#[derive(Debug, Clone)]
+pub struct FuncDecl {
+    pub func_type: FuncType,
+    pub ident: String,
+    pub func_f_parms: Option<FuncFParms>,
 }
 
 #[derive(Debug, Clone)]

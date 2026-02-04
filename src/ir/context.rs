@@ -57,7 +57,9 @@ impl<'a> GenContext<'a> {
 
     /// Insert a symbol into the current scope
     pub fn insert_symbol(&mut self, ident: String, symbol: Symbol) {
-        self.scopes.last_mut().unwrap().insert(ident, symbol);
+        if let Some(val) = self.scopes.last_mut().unwrap().insert(ident, symbol) {
+            panic!("Duplicate symbol insertion: {:?}", val);
+        }
     }
 
     /// Lookup a symbol in the scopes

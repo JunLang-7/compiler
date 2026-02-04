@@ -5,7 +5,7 @@ mod exp;
 mod stmt;
 mod util;
 
-use crate::ast::{self, Block, BlockItem, ConstInitVal, Decl, FuncDef, GlobalItem};
+use crate::ast::{self, Block, BlockItem, ConstInitVal, Decl, FuncDecl, FuncDef, GlobalItem};
 use decl::generate_decl;
 use koopa::ir::{BasicBlock, FunctionData, Program};
 use koopa::ir::{Type, builder_traits::*};
@@ -50,15 +50,64 @@ pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
 
     for item in &ast.items {
         match item {
+            GlobalItem::Decl(decl) => {
+                generate_global_decl(&mut ctx, decl);
+            }
             GlobalItem::FuncDef(func_def) => {
                 generate_func_def(&mut ctx, func_def);
             }
-            GlobalItem::Decl(decl) => {
-                generate_global_decl(&mut ctx, decl);
+            GlobalItem::FuncDecl(func_decl) => {
+                generate_func_decl(&mut ctx, func_decl);
             }
         }
     }
     program
+}
+
+/// Generate Koopa IR for a global variable declaration
+pub fn generate_global_decl(ctx: &mut GenContext, decl: &Decl) {
+    match decl {
+        Decl::ConstDecl(const_decl) => {
+            for def in &const_decl.const_defs {
+                let ty = get_array_type(ctx, Type::get_i32(), &def.dims);
+                if def.dims.is_empty() {
+                    // Scalar
+                    if let ConstInitVal::Exp(const_exp) = &def.const_init_val {
+                        let val = const_exp.exp.evaluate(ctx);
+                        ctx.insert_symbol(def.ident.clone(), Symbol::Const(val));
+                    } else {
+                        panic!("Scalar constant initialized with list");
+                    }
+                } else {
+                    // Array
+                    let init_val = generate_global_const_init_val(ctx, &def.const_init_val, &ty);
+                    let alloc = ctx.program.new_value().global_alloc(init_val);
+                    ctx.program
+                        .set_value_name(alloc, Some(format!("@{}", def.ident)));
+                    ctx.insert_symbol(def.ident.clone(), Symbol::Array(alloc));
+                }
+            }
+        }
+        Decl::VarDecl(var_decl) => {
+            for def in &var_decl.var_defs {
+                let ty = get_array_type(ctx, Type::get_i32(), &def.dims);
+                let init_val = if let Some(init) = &def.init_val {
+                    generate_global_init_val(ctx, init, &ty)
+                } else {
+                    generate_global_zero_init(ctx, &ty)
+                };
+                let alloc = ctx.program.new_value().global_alloc(init_val);
+                ctx.program
+                    .set_value_name(alloc, Some(format!("@{}", def.ident)));
+
+                if def.dims.is_empty() {
+                    ctx.insert_symbol(def.ident.clone(), Symbol::Var(alloc));
+                } else {
+                    ctx.insert_symbol(def.ident.clone(), Symbol::Array(alloc));
+                }
+            }
+        }
+    }
 }
 
 /// Generate Koopa IR for a function definition
@@ -85,14 +134,38 @@ pub fn generate_func_def(ctx: &mut GenContext, func_def: &FuncDef) {
         vec![]
     };
     let ret_ty = func_def.func_type.return_type();
-    let func_data =
-        FunctionData::with_param_names(format!("@{}", func_def.ident), parm_ty, ret_ty.clone());
-    let parm_val = func_data.params().to_owned();
-    let func = ctx.program.new_func(func_data);
-    ctx.insert_symbol(func_def.ident.clone(), Symbol::Func(func));
+
+    let func = if let Some(symbol) = ctx.lookup_symbol(&func_def.ident) {
+        if let Symbol::Func(f) = symbol {
+            if !ctx.program.func(f).layout().bbs().is_empty() {
+                panic!("Function {} already defined", func_def.ident);
+            }
+            f
+        } else {
+            panic!("Symbol {} is defined but not a function", func_def.ident);
+        }
+    } else {
+        let func_data =
+            FunctionData::with_param_names(format!("@{}", func_def.ident), parm_ty, ret_ty.clone());
+        let func = ctx.program.new_func(func_data);
+        ctx.insert_symbol(func_def.ident.clone(), Symbol::Func(func));
+        func
+    };
+
     // 设置当前函数与作用域
     ctx.current_func = Some(func);
     ctx.current_ret_ty = Some(ret_ty.clone());
+
+    // Update parameter names
+    let parm_val = ctx.func_mut().params().to_owned();
+    if let Some(func_f_parms) = &func_def.func_f_parms {
+        for (parm, &val) in func_f_parms.func_f_parms.iter().zip(parm_val.iter()) {
+            ctx.func_mut()
+                .dfg_mut()
+                .set_value_name(val, Some(format!("@{}", parm.ident)));
+        }
+    }
+
     ctx.enter_scope();
     // 在函数中创建一个基本块(entry basic block)
     let entry = ctx
@@ -157,50 +230,34 @@ pub fn generate_func_def(ctx: &mut GenContext, func_def: &FuncDef) {
     ctx.current_func = None;
 }
 
-/// Generate Koopa IR for a global variable declaration
-pub fn generate_global_decl(ctx: &mut GenContext, decl: &Decl) {
-    match decl {
-        Decl::ConstDecl(const_decl) => {
-            for def in &const_decl.const_defs {
-                let ty = get_array_type(ctx, Type::get_i32(), &def.dims);
-                if def.dims.is_empty() {
-                    // Scalar
-                    if let ConstInitVal::Exp(const_exp) = &def.const_init_val {
-                        let val = const_exp.exp.evaluate(ctx);
-                        ctx.insert_symbol(def.ident.clone(), Symbol::Const(val));
-                    } else {
-                        panic!("Scalar constant initialized with list");
+/// Generate Koopa IR for a function declaration
+pub fn generate_func_decl(ctx: &mut GenContext, func_decl: &FuncDecl) {
+    let parm_ty = if let Some(func_f_parms) = &func_decl.func_f_parms {
+        func_f_parms
+            .func_f_parms
+            .iter()
+            .map(|parm| {
+                let ty = if let Some(dims) = &parm.dims {
+                    let mut base_ty = parm.b_type.into_type();
+                    for dim in dims.iter().rev() {
+                        let size = dim.exp.evaluate(ctx);
+                        base_ty = Type::get_array(base_ty, size as usize);
                     }
+                    Type::get_pointer(base_ty)
                 } else {
-                    // Array
-                    let init_val = generate_global_const_init_val(ctx, &def.const_init_val, &ty);
-                    let alloc = ctx.program.new_value().global_alloc(init_val);
-                    ctx.program
-                        .set_value_name(alloc, Some(format!("@{}", def.ident)));
-                    ctx.insert_symbol(def.ident.clone(), Symbol::Array(alloc));
-                }
-            }
-        }
-        Decl::VarDecl(var_decl) => {
-            for def in &var_decl.var_defs {
-                let ty = get_array_type(ctx, Type::get_i32(), &def.dims);
-                let init_val = if let Some(init) = &def.init_val {
-                    generate_global_init_val(ctx, init, &ty)
-                } else {
-                    generate_global_zero_init(ctx, &ty)
+                    parm.b_type.into_type()
                 };
-                let alloc = ctx.program.new_value().global_alloc(init_val);
-                ctx.program
-                    .set_value_name(alloc, Some(format!("@{}", def.ident)));
-
-                if def.dims.is_empty() {
-                    ctx.insert_symbol(def.ident.clone(), Symbol::Var(alloc));
-                } else {
-                    ctx.insert_symbol(def.ident.clone(), Symbol::Array(alloc));
-                }
-            }
-        }
-    }
+                (Some(format!("@{}", parm.ident.clone())), ty)
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+    let ret_ty = func_decl.func_type.return_type();
+    let func_data =
+        FunctionData::with_param_names(format!("@{}", func_decl.ident), parm_ty, ret_ty.clone());
+    let func = ctx.program.new_func(func_data);
+    ctx.insert_symbol(func_decl.ident.clone(), Symbol::Func(func));
 }
 
 /// Generate Koopa IR for a block and return the latest insertion block

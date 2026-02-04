@@ -11,11 +11,7 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) -> Basic
         Decl::ConstDecl(const_decl) => {
             for def in &const_decl.const_defs {
                 let ty = get_array_type(ctx, Type::get_i32(), &def.dims);
-                let dims_i32: Vec<i32> = def
-                    .dims
-                    .iter()
-                    .map(|dim| dim.exp.evaluate(ctx))
-                    .collect();
+                let dims_i32: Vec<i32> = def.dims.iter().map(|dim| dim.exp.evaluate(ctx)).collect();
                 if def.dims.is_empty() {
                     // Scalar Constant
                     match &def.const_init_val {
@@ -45,11 +41,7 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) -> Basic
         Decl::VarDecl(var_decl) => {
             for def in &var_decl.var_defs {
                 let ty = get_array_type(ctx, Type::get_i32(), &def.dims);
-                let dims_i32: Vec<i32> = def
-                    .dims
-                    .iter()
-                    .map(|dim| dim.exp.evaluate(ctx))
-                    .collect();
+                let dims_i32: Vec<i32> = def.dims.iter().map(|dim| dim.exp.evaluate(ctx)).collect();
                 let alloc = ctx.func_mut().dfg_mut().new_value().alloc(ty);
                 ctx.func_mut()
                     .layout_mut()
