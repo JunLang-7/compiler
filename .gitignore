@@ -2,3 +2,6 @@
 hello.c
 hello.koopa
 hello.S
+bench.py
+/example
+Makefile
