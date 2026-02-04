@@ -14,13 +14,13 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) -> Basic
                 let dims_i32: Vec<i32> = def
                     .dims
                     .iter()
-                    .map(|dim| dim.exp.evaluate(ctx.symbol_table()))
+                    .map(|dim| dim.exp.evaluate(ctx))
                     .collect();
                 if def.dims.is_empty() {
                     // Scalar Constant
                     match &def.const_init_val {
                         ConstInitVal::Exp(const_exp) => {
-                            let val = const_exp.exp.evaluate(ctx.symbol_table());
+                            let val = const_exp.exp.evaluate(ctx);
                             ctx.insert_symbol(def.ident.clone(), Symbol::Const(val));
                         }
                         ConstInitVal::List(_) => {
@@ -48,7 +48,7 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) -> Basic
                 let dims_i32: Vec<i32> = def
                     .dims
                     .iter()
-                    .map(|dim| dim.exp.evaluate(ctx.symbol_table()))
+                    .map(|dim| dim.exp.evaluate(ctx))
                     .collect();
                 let alloc = ctx.func_mut().dfg_mut().new_value().alloc(ty);
                 ctx.func_mut()

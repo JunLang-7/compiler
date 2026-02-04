@@ -123,7 +123,11 @@ pub fn generate_primary_exp(
 }
 
 fn load_or_decay(ctx: &mut GenContext, bb: &mut BasicBlock, ptr: Value) -> Value {
-    let ptr_ty = ctx.func_mut().dfg().value(ptr).ty().clone();
+    let ptr_ty = if ctx.func_mut().dfg().values().contains_key(&ptr) {
+        ctx.func_mut().dfg().value(ptr).ty().clone()
+    } else {
+        ctx.program.borrow_value(ptr).ty().clone()
+    };
     match ptr_ty.kind() {
         TypeKind::Pointer(inner) => {
             if matches!(inner.kind(), TypeKind::Array(_, _)) {

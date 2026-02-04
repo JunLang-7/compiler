@@ -71,7 +71,7 @@ pub fn generate_func_def(ctx: &mut GenContext, func_def: &FuncDef) {
                 let ty = if let Some(dims) = &parm.dims {
                     let mut base_ty = parm.b_type.into_type();
                     for dim in dims.iter().rev() {
-                        let size = dim.exp.evaluate(ctx.symbol_table());
+                        let size = dim.exp.evaluate(ctx);
                         base_ty = Type::get_array(base_ty, size as usize);
                     }
                     Type::get_pointer(base_ty)
@@ -112,7 +112,7 @@ pub fn generate_func_def(ctx: &mut GenContext, func_def: &FuncDef) {
             let ty = if let Some(dims) = &parm.dims {
                 let mut base_ty = parm.b_type.into_type();
                 for dim in dims.iter().rev() {
-                    let size = dim.exp.evaluate(ctx.symbol_table());
+                    let size = dim.exp.evaluate(ctx);
                     base_ty = Type::get_array(base_ty, size as usize);
                 }
                 Type::get_pointer(base_ty)
@@ -166,7 +166,7 @@ pub fn generate_global_decl(ctx: &mut GenContext, decl: &Decl) {
                 if def.dims.is_empty() {
                     // Scalar
                     if let ConstInitVal::Exp(const_exp) = &def.const_init_val {
-                        let val = const_exp.exp.evaluate(ctx.symbol_table());
+                        let val = const_exp.exp.evaluate(ctx);
                         ctx.insert_symbol(def.ident.clone(), Symbol::Const(val));
                     } else {
                         panic!("Scalar constant initialized with list");

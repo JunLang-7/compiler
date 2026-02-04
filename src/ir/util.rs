@@ -8,7 +8,7 @@ use koopa::ir::{BasicBlock, Type, TypeKind, Value};
 pub fn get_array_type(ctx: &mut GenContext, base_ty: Type, dims: &[ConstExp]) -> Type {
     let mut ty = base_ty;
     for dim in dims.iter().rev() {
-        let len = dim.exp.evaluate(ctx.symbol_table());
+        let len = dim.exp.evaluate(ctx);
         ty = Type::get_array(ty, len as usize);
     }
     ty
@@ -153,7 +153,7 @@ fn flatten_const_helper(
 ) {
     match init {
         ConstInitVal::Exp(const_exp) => {
-            let val = const_exp.exp.evaluate(ctx.symbol_table());
+            let val = const_exp.exp.evaluate(ctx);
             result.push(val);
         }
         ConstInitVal::List(list) => {
@@ -189,7 +189,7 @@ pub fn generate_global_init_val(ctx: &mut GenContext, init: &InitVal, ty: &Type)
     let flat_exps = flatten_var(ctx, init, &dims);
     let mut flat_vals = Vec::new();
     for exp in flat_exps {
-        flat_vals.push(exp.evaluate(ctx.symbol_table()));
+        flat_vals.push(exp.evaluate(ctx));
     }
     build_aggregate_value(ctx, &flat_vals, &dims)
 }

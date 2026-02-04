@@ -1,21 +1,20 @@
-use super::Symbol;
+use super::{GenContext, Symbol};
 use crate::ast::*;
-use std::collections::HashMap;
 
 pub trait Eval {
-    fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32;
+    fn evaluate(&self, ctx: &GenContext) -> i32;
 }
 
 impl Eval for Exp {
-    fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
+    fn evaluate(&self, ctx: &GenContext) -> i32 {
         match &self.lor_exp {
-            LOrExp::LAndExp(land_exp) => land_exp.evaluate(symbol_table),
+            LOrExp::LAndExp(land_exp) => land_exp.evaluate(ctx),
             LOrExp::LOrOp { lhs, rhs } => {
-                let left = lhs.evaluate(symbol_table);
+                let left = lhs.evaluate(ctx);
                 if left != 0 {
                     1
                 } else {
-                    let right = rhs.evaluate(symbol_table);
+                    let right = rhs.evaluate(ctx);
                     if right != 0 { 1 } else { 0 }
                 }
             }
@@ -24,11 +23,11 @@ impl Eval for Exp {
 }
 
 impl Eval for UnaryExp {
-    fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
+    fn evaluate(&self, ctx: &GenContext) -> i32 {
         match &self {
-            UnaryExp::PrimaryExp(primary_exp) => primary_exp.evaluate(symbol_table),
+            UnaryExp::PrimaryExp(primary_exp) => primary_exp.evaluate(ctx),
             UnaryExp::UnaryOp { op, exp } => {
-                let val = exp.evaluate(symbol_table);
+                let val = exp.evaluate(ctx);
                 match op {
                     UnaryOp::Plus => val,
                     UnaryOp::Minus => -val,
@@ -49,13 +48,13 @@ impl Eval for UnaryExp {
 }
 
 impl Eval for PrimaryExp {
-    fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
+    fn evaluate(&self, ctx: &GenContext) -> i32 {
         match &self {
-            PrimaryExp::Exp(exp) => exp.evaluate(symbol_table),
+            PrimaryExp::Exp(exp) => exp.evaluate(ctx),
             PrimaryExp::Number(num) => *num,
             PrimaryExp::LVal(lval) => {
-                if let Some(val) = symbol_table.get(&lval.ident) {
-                    match *val {
+                if let Some(val) = ctx.lookup_symbol(&lval.ident) {
+                    match val {
                         Symbol::Const(val) => val,
                         Symbol::Var(_) => panic!(
                             "Error: Variable '{}' cannot be used in a constant expression.",
@@ -79,12 +78,12 @@ impl Eval for PrimaryExp {
 }
 
 impl Eval for AddExp {
-    fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
+    fn evaluate(&self, ctx: &GenContext) -> i32 {
         match &self {
-            AddExp::MulExp(mul_exp) => mul_exp.evaluate(symbol_table),
+            AddExp::MulExp(mul_exp) => mul_exp.evaluate(ctx),
             AddExp::AddOp { lhs, op, rhs } => {
-                let left = lhs.evaluate(symbol_table);
-                let right = rhs.evaluate(symbol_table);
+                let left = lhs.evaluate(ctx);
+                let right = rhs.evaluate(ctx);
                 match op {
                     AddOp::Plus => left + right,
                     AddOp::Minus => left - right,
@@ -95,12 +94,12 @@ impl Eval for AddExp {
 }
 
 impl Eval for MulExp {
-    fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
+    fn evaluate(&self, ctx: &GenContext) -> i32 {
         match &self {
-            MulExp::UnaryExp(unary_exp) => unary_exp.evaluate(symbol_table),
+            MulExp::UnaryExp(unary_exp) => unary_exp.evaluate(ctx),
             MulExp::MulOp { lhs, op, rhs } => {
-                let left = lhs.evaluate(symbol_table);
-                let right = rhs.evaluate(symbol_table);
+                let left = lhs.evaluate(ctx);
+                let right = rhs.evaluate(ctx);
                 match op {
                     MulOp::Mul => left * right,
                     MulOp::Div => left / right,
@@ -112,12 +111,12 @@ impl Eval for MulExp {
 }
 
 impl Eval for RelExp {
-    fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
+    fn evaluate(&self, ctx: &GenContext) -> i32 {
         match &self {
-            RelExp::AddExp(add_exp) => add_exp.evaluate(symbol_table),
+            RelExp::AddExp(add_exp) => add_exp.evaluate(ctx),
             RelExp::RelOp { lhs, op, rhs } => {
-                let left = lhs.evaluate(symbol_table);
-                let right = rhs.evaluate(symbol_table);
+                let left = lhs.evaluate(ctx);
+                let right = rhs.evaluate(ctx);
                 match op {
                     RelOp::Lt => {
                         if left < right {
@@ -154,12 +153,12 @@ impl Eval for RelExp {
 }
 
 impl Eval for EqExp {
-    fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
+    fn evaluate(&self, ctx: &GenContext) -> i32 {
         match &self {
-            EqExp::RelExp(rel_exp) => rel_exp.evaluate(symbol_table),
+            EqExp::RelExp(rel_exp) => rel_exp.evaluate(ctx),
             EqExp::EqOp { lhs, op, rhs } => {
-                let left = lhs.evaluate(symbol_table);
-                let right = rhs.evaluate(symbol_table);
+                let left = lhs.evaluate(ctx);
+                let right = rhs.evaluate(ctx);
                 match op {
                     EqOp::Eq => {
                         if left == right {
@@ -182,15 +181,15 @@ impl Eval for EqExp {
 }
 
 impl Eval for LAndExp {
-    fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
+    fn evaluate(&self, ctx: &GenContext) -> i32 {
         match &self {
-            LAndExp::EqExp(eq_exp) => eq_exp.evaluate(symbol_table),
+            LAndExp::EqExp(eq_exp) => eq_exp.evaluate(ctx),
             LAndExp::LAndOp { lhs, rhs } => {
-                let left = lhs.evaluate(symbol_table);
+                let left = lhs.evaluate(ctx);
                 if left == 0 {
                     0
                 } else {
-                    let right = rhs.evaluate(symbol_table);
+                    let right = rhs.evaluate(ctx);
                     if right != 0 { 1 } else { 0 }
                 }
             }
@@ -199,15 +198,15 @@ impl Eval for LAndExp {
 }
 
 impl Eval for LOrExp {
-    fn evaluate(&self, symbol_table: &mut HashMap<String, Symbol>) -> i32 {
+    fn evaluate(&self, ctx: &GenContext) -> i32 {
         match &self {
-            LOrExp::LAndExp(land_exp) => land_exp.evaluate(symbol_table),
+            LOrExp::LAndExp(land_exp) => land_exp.evaluate(ctx),
             LOrExp::LOrOp { lhs, rhs } => {
-                let left = lhs.evaluate(symbol_table);
+                let left = lhs.evaluate(ctx);
                 if left != 0 {
                     1
                 } else {
-                    let right = rhs.evaluate(symbol_table);
+                    let right = rhs.evaluate(ctx);
                     if right != 0 { 1 } else { 0 }
                 }
             }

@@ -55,11 +55,6 @@ impl<'a> GenContext<'a> {
         self.scopes.pop();
     }
 
-    /// Return the symbol table of current scope
-    pub fn symbol_table(&mut self) -> &mut HashMap<String, Symbol> {
-        self.scopes.last_mut().unwrap()
-    }
-
     /// Insert a symbol into the current scope
     pub fn insert_symbol(&mut self, ident: String, symbol: Symbol) {
         self.scopes.last_mut().unwrap().insert(ident, symbol);
