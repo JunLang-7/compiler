@@ -375,6 +375,29 @@ impl<'a> AsmGen<'a> {
 
                         self.store_from_reg(inst, "t0")?;
                     }
+                    ValueKind::GetPtr(gp) => {
+                        self.load_to_reg(gp.src(), "t0")?;
+                        self.load_to_reg(gp.index(), "t1")?;
+                        let src_ty = self.value_ty(gp.src());
+                        let ptr_ty = match src_ty.kind() {
+                            TypeKind::Pointer(base) => base,
+                            _ => panic!("GetPtr src must be a pointer"),
+                        };
+                        let elem_size = calc_type_size(ptr_ty);
+
+                        // calcuate offset
+                        if elem_size == 4 {
+                            writeln!(self.writer, "\tslli t1, t1, 2")?;
+                        } else {
+                            writeln!(self.writer, "\tli t2, {}", elem_size)?;
+                            writeln!(self.writer, "\tmul t1, t1, t2")?;
+                        }
+                        
+                        // calcuate result
+                        writeln!(self.writer, "\tadd t0, t0, t1")?;
+
+                        self.store_from_reg(inst, "t0")?;
+                    }
                     _ => unreachable!(),
                 }
             }
