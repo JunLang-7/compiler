@@ -351,7 +351,7 @@ impl<'a> AsmGen<'a> {
                     ValueKind::GetElemPtr(gep) => {
                         self.load_to_reg(gep.src(), "t0")?;
                         self.load_to_reg(gep.index(), "t1")?;
-                        let src_ty = self.func_data.dfg().value(gep.src()).ty().clone();
+                        let src_ty = self.value_ty(gep.src());
                         let ptr_ty = match src_ty.kind() {
                             TypeKind::Pointer(base) => base,
                             _ => panic!("GetElemPtr src must be a pointer"),
@@ -380,6 +380,14 @@ impl<'a> AsmGen<'a> {
             }
         }
         Ok(())
+    }
+
+    fn value_ty(&self, val: Value) -> Type {
+        if self.func_data.dfg().values().contains_key(&val) {
+            self.func_data.dfg().value(val).ty().clone()
+        } else {
+            self.program.borrow_value(val).ty().clone()
+        }
     }
 
     /// Get the label of a basic block
