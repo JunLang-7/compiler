@@ -2,7 +2,7 @@ mod asm;
 mod ast;
 mod ir;
 
-use crate::asm::GenerateAsm;
+use crate::asm::generate_asm;
 use crate::ir::generate_koopa;
 use koopa::back::KoopaGenerator;
 use koopa::ir::Type;
@@ -47,7 +47,7 @@ fn main() -> Result<()> {
         }
         "-riscv" => {
             // 将 Koopa IR 转换为 RISC-V 汇编并输出
-            program.generate(&mut File::create(output)?)?;
+            generate_asm(&program, &mut File::create(output)?)?;
         }
         _ => panic!("Unknown mode: {}", mode),
     }
