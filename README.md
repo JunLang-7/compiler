@@ -40,6 +40,15 @@
 
 ## 构建与运行
 
+### Docker 环境 (推荐)
+
+可以使用预配置好的 Docker 镜像 `maxxing/compiler-dev` 进行开发与构建，其中已包含 Rust 环境与 Koopa/RISC-V 工具链。
+
+```bash
+docker pull maxxing/compiler-dev
+docker run -it --rm -v "$(pwd)":/root/compiler maxxing/compiler-dev bash
+```
+
 ### 依赖
 
 - Rust (edition 2024)
@@ -64,7 +73,7 @@ cargo run -- [mode] [input_file] -o [output_file]
 #### 参数说明：
 - mode:
     - `-koopa`: 将 SysY 源码编译为 Koopa IR (.koopa).
-    - -`riscv`: 将 SysY 源码编译为 RISC-V 汇编 (.S).
+    - `-riscv`: 将 SysY 源码编译为 RISC-V 汇编 (.S).
 - input_file: 输入的 .c 或 .sy 源文件路径。
 - output_file: 输出文件路径。
 
