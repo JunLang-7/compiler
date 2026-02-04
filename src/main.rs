@@ -49,6 +49,10 @@ fn main() -> Result<()> {
             // 将 Koopa IR 转换为 RISC-V 汇编并输出
             generate_asm(&program, &mut File::create(output)?)?;
         }
+        "-perf" => {
+            // 性能测试模式
+            generate_asm(&program, &mut File::create(output)?)?;
+        }
         _ => panic!("Unknown mode: {}", mode),
     }
 
