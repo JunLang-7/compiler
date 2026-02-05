@@ -80,16 +80,16 @@ cargo run -- [mode] [input_file] -o [output_file]
 #### 示例：
 ```bash
 # 生成 Koopa IR
-cargo run -- -koopa hello.sy -o hello.koopa
+cargo run -- -koopa hello.c -o hello.koopa
 
 # 生成 RISC-V 汇编
-cargo run -- -riscv hello.sy -o hello.S
+cargo run -- -riscv hello.c -o hello.S
 ```
 
 或者直接使用构建好的二进制文件：
 
 ```bash
-./target/release/compiler -riscv test.sy -o test.s
+./target/release/compiler -riscv hello.c -o hello.S
 ```
 
 ## 项目结构
