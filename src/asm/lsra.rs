@@ -4,18 +4,21 @@ use std::collections::HashMap;
 
 /// Linear Scan Register Allocator
 pub struct LinearScan {
-    allocatable_regs: Vec<i32>,
+    callee_saved_regs: Vec<i32>,
+    caller_saved_regs: Vec<i32>,
     spill_slot_count: i32,
 }
 
 impl LinearScan {
     /// Create a new Linear Scan Register Allocator
     pub fn new() -> Self {
-        // allocatable regs are caller-saved regs: s0-s11
-        // TODO: we can use callee-saved regs for some long-live values to reduce spill cost
-        let regs = vec![8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
+        // allocatable regs are callee-saved regs: s0-s11
+        let callee = vec![8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
+        // TODO: we can use caller-saved regs: t3-t6 as well
+        let caller = vec![28, 29, 30, 31];
         Self {
-            allocatable_regs: regs,
+            callee_saved_regs: callee,
+            caller_saved_regs: caller,
             spill_slot_count: 0,
         }
     }
@@ -23,7 +26,12 @@ impl LinearScan {
     /// Run the Linear Scan Register Allocation Algorithm
     pub fn run(&mut self, list: &mut Vec<LiveInterval>) -> HashMap<Value, Location> {
         // pool of free regs
-        let mut free_regs = self.allocatable_regs.clone();
+        let mut free_regs = [
+            self.callee_saved_regs.clone(),
+            self.caller_saved_regs.clone(),
+        ]
+        .concat();
+        free_regs.reverse();
         let mut active = Vec::new();
         let mut allocation = HashMap::new();
 
@@ -31,15 +39,15 @@ impl LinearScan {
 
         for i in list.iter() {
             self.expire_old_intervals(i, &mut active, &mut free_regs);
-            if free_regs.is_empty() {
-                self.spill_at_interval(i, &mut active, &mut allocation);
-            } else {
-                let reg = self.select_register(&free_regs, i, &active);
+            let candidate = self.select_register(&free_regs, i, &active);
+            if let Some(reg) = candidate {
                 free_regs.retain(|&r| r != reg);
                 let mut interval = i.clone();
                 interval.reg = Some(reg);
                 allocation.insert(interval.value, Location::Reg(reg));
                 active.push(interval);
+            } else {
+                self.spill_at_interval(i, &mut active, &mut allocation);
             }
         }
 
@@ -94,10 +102,31 @@ impl LinearScan {
     fn select_register(
         &self,
         free_regs: &[i32],
-        _i: &LiveInterval,
+        i: &LiveInterval,
         _active: &Vec<LiveInterval>,
-    ) -> i32 {
-        *free_regs.first().unwrap()
+    ) -> Option<i32> {
+        if i.cross_call {
+            // must use callee-saved regs
+            for &reg in free_regs.iter().rev() {
+                if self.callee_saved_regs.contains(&reg) {
+                    return Some(reg);
+                }
+            }
+        } else {
+            // prefer caller-saved regs
+            for &reg in free_regs.iter().rev() {
+                if self.caller_saved_regs.contains(&reg) {
+                    return Some(reg);
+                }
+            }
+            // fallback to callee-saved regs
+            for &reg in free_regs.iter().rev() {
+                if self.callee_saved_regs.contains(&reg) {
+                    return Some(reg);
+                }
+            }
+        }
+        None
     }
 
     /// alloc a slot index

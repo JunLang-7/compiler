@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 pub struct LivenessAnalysis<'a> {
     func: &'a FunctionData,
     inst_ids: HashMap<Value, u32>,
+    call_inst_ids: HashSet<u32>,
     pub intervals: HashMap<Value, LiveInterval>,
 }
 
@@ -15,6 +16,7 @@ impl<'a> LivenessAnalysis<'a> {
         Self {
             func,
             inst_ids: HashMap::new(),
+            call_inst_ids: HashSet::new(),
             intervals: HashMap::new(),
         }
     }
@@ -23,6 +25,7 @@ impl<'a> LivenessAnalysis<'a> {
     pub fn analyze(&mut self) {
         self.number_instructions();
         self.compute_liveness();
+        self.mark_cross_call();
     }
 
     /// Number instructions linearly for liveness analysis
@@ -39,6 +42,7 @@ impl<'a> LivenessAnalysis<'a> {
                     start: id,
                     end: id + 1,
                     reg: None,
+                    cross_call: false,
                 },
             );
         }
@@ -48,6 +52,10 @@ impl<'a> LivenessAnalysis<'a> {
         for (_, node) in self.func.layout().bbs() {
             for &inst in node.insts().keys() {
                 self.inst_ids.insert(inst, id);
+                // Record call instructions
+                if let ValueKind::Call(_) = self.func.dfg().value(inst).kind() {
+                    self.call_inst_ids.insert(id);
+                }
                 id += 2;
             }
         }
@@ -163,18 +171,18 @@ impl<'a> LivenessAnalysis<'a> {
                 new_in.retain(|v| !defs.contains(v));
                 new_in.extend(uses.iter().cloned());
 
-                let mut update =
-                    |map: &mut HashMap<BasicBlock, HashSet<Value>>, new_val: HashSet<Value>| {
-                        if let Some(old_val) = map.get(&bb) {
-                            if *old_val != new_val {
-                                map.insert(bb, new_val);
-                                changed = true;
-                            }
-                        } else {
+                let mut update = |map: &mut HashMap<BasicBlock, HashSet<Value>>,
+                                  new_val: HashSet<Value>| {
+                    if let Some(old_val) = map.get(&bb) {
+                        if *old_val != new_val {
                             map.insert(bb, new_val);
                             changed = true;
                         }
-                    };
+                    } else {
+                        map.insert(bb, new_val);
+                        changed = true;
+                    }
+                };
                 update(live_in, new_in);
                 update(live_out, new_out);
             }
@@ -200,6 +208,7 @@ impl<'a> LivenessAnalysis<'a> {
                     start: id,
                     end: id,
                     reg: None,
+                    cross_call: false,
                 },
             );
         }
@@ -231,6 +240,18 @@ impl<'a> LivenessAnalysis<'a> {
         }
     }
 
+    /// Mark live intervals that cross function calls
+    fn mark_cross_call(&mut self) {
+        for interval in self.intervals.values_mut() {
+            for &call_id in self.call_inst_ids.iter() {
+                if interval.start < call_id && call_id < interval.end {
+                    interval.cross_call = true;
+                    break;
+                }
+            }
+        }
+    }
+
     /// Helper to check and add to uses set
     fn check_use(&self, val: Value, uses: &mut HashSet<Value>, defs: &HashSet<Value>) {
         if self.is_variable(val) && !defs.contains(&val) {
@@ -245,7 +266,10 @@ impl<'a> LivenessAnalysis<'a> {
         }
         !matches!(
             self.func.dfg().value(val).kind(),
-            ValueKind::Integer(_) | ValueKind::GlobalAlloc(_) | ValueKind::ZeroInit(_)
+            ValueKind::Integer(_)
+                | ValueKind::GlobalAlloc(_)
+                | ValueKind::ZeroInit(_)
+                | ValueKind::Alloc(_)
         )
     }
 
