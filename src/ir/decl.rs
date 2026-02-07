@@ -26,7 +26,9 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) -> Basic
                 } else {
                     // Array Constant -> Treated as Variable in IR
                     let alloc = ctx.func_mut().dfg_mut().new_value().alloc(ty);
-                    ctx.func_mut().dfg_mut().set_value_name(alloc, Some(format!("@{}", def.ident.clone())));
+                    ctx.func_mut()
+                        .dfg_mut()
+                        .set_value_name(alloc, Some(format!("@{}", def.ident.clone())));
                     ctx.func_mut()
                         .layout_mut()
                         .bb_mut(current_bb)
@@ -44,7 +46,9 @@ pub fn generate_decl(ctx: &mut GenContext, bb: BasicBlock, decl: &Decl) -> Basic
                 let ty = get_array_type(ctx, Type::get_i32(), &def.dims);
                 let dims_i32: Vec<i32> = def.dims.iter().map(|dim| dim.exp.evaluate(ctx)).collect();
                 let alloc = ctx.func_mut().dfg_mut().new_value().alloc(ty);
-                ctx.func_mut().dfg_mut().set_value_name(alloc, Some(format!("@{}", def.ident.clone())));
+                ctx.func_mut()
+                    .dfg_mut()
+                    .set_value_name(alloc, Some(format!("@{}", def.ident.clone())));
                 ctx.func_mut()
                     .layout_mut()
                     .bb_mut(current_bb)

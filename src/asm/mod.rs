@@ -1,4 +1,7 @@
 mod asm_gen;
+mod interval;
+mod liveness;
+mod lsra;
 
 use asm_gen::AsmGen;
 use koopa::ir::{Program, Type, TypeKind, Value, ValueKind};

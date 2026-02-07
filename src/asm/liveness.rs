@@ -1,0 +1,327 @@
+use super::interval::LiveInterval;
+use koopa::ir::{BasicBlock, FunctionData, Value, ValueKind, layout::BasicBlockNode};
+use std::collections::{HashMap, HashSet};
+
+/// Liveness Analysis for a function
+pub struct LivenessAnalysis<'a> {
+    func: &'a FunctionData,
+    inst_ids: HashMap<Value, u32>,
+    pub intervals: HashMap<Value, LiveInterval>,
+}
+
+impl<'a> LivenessAnalysis<'a> {
+    /// Create a new Liveness Analysis instance
+    pub fn new(func: &'a FunctionData) -> Self {
+        Self {
+            func,
+            inst_ids: HashMap::new(),
+            intervals: HashMap::new(),
+        }
+    }
+
+    /// Perform liveness analysis and compute live intervals
+    pub fn analyze(&mut self) {
+        self.number_instructions();
+        self.compute_liveness();
+    }
+
+    /// Number instructions linearly for liveness analysis
+    fn number_instructions(&mut self) {
+        let mut id = 0;
+
+        // Handle parameters
+        for &parm in self.func.params() {
+            self.inst_ids.insert(parm, id);
+            self.intervals.insert(
+                parm,
+                LiveInterval {
+                    value: parm,
+                    start: id,
+                    end: id + 1,
+                    reg: None,
+                },
+            );
+        }
+        id += 2;
+
+        // Handle instructions in basic blocks in layout order
+        for (_, node) in self.func.layout().bbs() {
+            for &inst in node.insts().keys() {
+                self.inst_ids.insert(inst, id);
+                id += 2;
+            }
+        }
+    }
+
+    /// Compute liveness sets and live intervals
+    fn compute_liveness(&mut self) {
+        let mut live_in: HashMap<BasicBlock, HashSet<Value>> = HashMap::new();
+        let mut live_out: HashMap<BasicBlock, HashSet<Value>> = HashMap::new();
+        let mut use_def: HashMap<BasicBlock, (HashSet<Value>, HashSet<Value>)> = HashMap::new();
+
+        // Map for access to basic block nodes
+        let bb_nodes: HashMap<BasicBlock, _> = self
+            .func
+            .layout()
+            .bbs()
+            .iter()
+            .map(|(&b, n)| (b, n))
+            .collect();
+        let bbs: Vec<BasicBlock> = self.func.layout().bbs().keys().cloned().collect();
+
+        // Step 1: Calculate Live Use & Live Def
+        self.live_use_def(&bbs, &bb_nodes, &mut use_def);
+        // Step 2: Calculate Live In & Live Out
+        self.live_in_out(&bbs, &use_def, &mut live_in, &mut live_out);
+        // Step 3: Compute Live Intervals
+        self.live_intervals(&bbs, &bb_nodes, &live_out);
+    }
+
+    /// Calculate Live Use and Live Def sets
+    fn live_use_def(
+        &self,
+        bbs: &Vec<BasicBlock>,
+        bb_nodes: &HashMap<BasicBlock, &BasicBlockNode>,
+        use_def: &mut HashMap<BasicBlock, (HashSet<Value>, HashSet<Value>)>,
+    ) {
+        for &bb in bbs.iter() {
+            let mut live_uses = HashSet::new();
+            let mut live_defs = HashSet::new();
+
+            let node = bb_nodes.get(&bb).unwrap();
+            for &inst in node.insts().keys() {
+                let val_data = self.func.dfg().value(inst);
+
+                // Add operands to uses
+                match val_data.kind() {
+                    ValueKind::Binary(bin) => {
+                        self.check_use(bin.lhs(), &mut live_uses, &live_defs);
+                        self.check_use(bin.rhs(), &mut live_uses, &live_defs);
+                    }
+                    ValueKind::Return(ret) => {
+                        if let Some(ret_val) = ret.value() {
+                            self.check_use(ret_val, &mut live_uses, &live_defs);
+                        }
+                    }
+                    ValueKind::Load(load) => {
+                        self.check_use(load.src(), &mut live_uses, &live_defs);
+                    }
+                    ValueKind::Store(store) => {
+                        self.check_use(store.value(), &mut live_uses, &live_defs);
+                        self.check_use(store.dest(), &mut live_uses, &live_defs);
+                    }
+                    ValueKind::Branch(br) => {
+                        self.check_use(br.cond(), &mut live_uses, &live_defs);
+                    }
+                    ValueKind::Call(call) => {
+                        for &arg in call.args() {
+                            self.check_use(arg, &mut live_uses, &live_defs);
+                        }
+                    }
+                    ValueKind::GetElemPtr(gep) => {
+                        self.check_use(gep.src(), &mut live_uses, &live_defs);
+                        self.check_use(gep.index(), &mut live_uses, &live_defs);
+                    }
+                    ValueKind::GetPtr(gp) => {
+                        self.check_use(gp.src(), &mut live_uses, &live_defs);
+                        self.check_use(gp.index(), &mut live_uses, &live_defs);
+                    }
+                    _ => {}
+                }
+
+                // Add defined value to defs
+                if !val_data.ty().is_unit() {
+                    live_defs.insert(inst);
+                }
+            }
+            use_def.insert(bb, (live_uses, live_defs));
+        }
+    }
+
+    /// Calculate Live In and Live Out sets
+    fn live_in_out(
+        &mut self,
+        bbs: &Vec<BasicBlock>,
+        use_def: &HashMap<BasicBlock, (HashSet<Value>, HashSet<Value>)>,
+        live_in: &mut HashMap<BasicBlock, HashSet<Value>>,
+        live_out: &mut HashMap<BasicBlock, HashSet<Value>>,
+    ) {
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for &bb in bbs.iter().rev() {
+                let mut new_out = HashSet::new();
+                for succ in self.get_successors(bb) {
+                    if let Some(succ_in) = live_in.get(&succ) {
+                        new_out.extend(succ_in.iter().cloned());
+                    }
+                }
+
+                let (uses, defs) = use_def.get(&bb).unwrap();
+                let mut new_in = new_out.clone();
+                // in[B] = use[B] ∪ (out[B] - def[B])
+                new_in.retain(|v| !defs.contains(v));
+                new_in.extend(uses.iter().cloned());
+
+                let mut update =
+                    |map: &mut HashMap<BasicBlock, HashSet<Value>>, new_val: HashSet<Value>| {
+                        if let Some(old_val) = map.get(&bb) {
+                            if *old_val != new_val {
+                                map.insert(bb, new_val);
+                                changed = true;
+                            }
+                        } else {
+                            map.insert(bb, new_val);
+                            changed = true;
+                        }
+                    };
+                update(live_in, new_in);
+                update(live_out, new_out);
+            }
+        }
+    }
+
+    /// Compute live intervals from live in/out sets
+    fn live_intervals(
+        &mut self,
+        bbs: &Vec<BasicBlock>,
+        bb_nodes: &HashMap<BasicBlock, &BasicBlockNode>,
+        live_out: &HashMap<BasicBlock, HashSet<Value>>,
+    ) {
+        // Default intervals for all values
+        for (val, &id) in self.inst_ids.iter() {
+            if !self.is_variable(*val) {
+                continue;
+            }
+            self.intervals.insert(
+                *val,
+                LiveInterval {
+                    value: *val,
+                    start: id,
+                    end: id,
+                    reg: None,
+                },
+            );
+        }
+
+        // Extend intervals based on liveness
+        for &bb in bbs.iter().rev() {
+            let node = bb_nodes.get(&bb).unwrap();
+            let block_out = live_out.get(&bb).cloned().unwrap_or_default();
+
+            let insts: Vec<_> = node.insts().keys().cloned().collect();
+            if insts.is_empty() {
+                continue;
+            }
+            let block_end = self.inst_ids[insts.last().unwrap()] + 1;
+            for &val in &block_out {
+                self.extend_interval(val, block_end);
+            }
+
+            let mut current_live = block_out;
+            for &inst in insts.iter().rev() {
+                let inst_id = self.inst_ids[&inst];
+                let val_data = self.func.dfg().value(inst);
+
+                if !val_data.ty().is_unit() {
+                    current_live.remove(&inst);
+                }
+                self.process_operands(inst, &mut current_live, inst_id);
+            }
+        }
+    }
+
+    /// Helper to check and add to uses set
+    fn check_use(&self, val: Value, uses: &mut HashSet<Value>, defs: &HashSet<Value>) {
+        if self.is_variable(val) && !defs.contains(&val) {
+            uses.insert(val);
+        }
+    }
+
+    // Check if value is a "variable" (inst result) vs constant
+    fn is_variable(&self, val: Value) -> bool {
+        if !self.func.dfg().values().contains_key(&val) {
+            return false;
+        }
+        !matches!(
+            self.func.dfg().value(val).kind(),
+            ValueKind::Integer(_) | ValueKind::GlobalAlloc(_) | ValueKind::ZeroInit(_)
+        )
+    }
+
+    /// Get successors of a basic block
+    fn get_successors(&self, bb: BasicBlock) -> Vec<BasicBlock> {
+        let node = self
+            .func
+            .layout()
+            .bbs()
+            .iter()
+            .find(|(b, _)| **b == bb)
+            .unwrap()
+            .1;
+        if let Some(&term) = node.insts().keys().last() {
+            match self.func.dfg().value(term).kind() {
+                ValueKind::Branch(br) => vec![br.true_bb(), br.false_bb()],
+                ValueKind::Jump(jmp) => vec![jmp.target()],
+                _ => vec![],
+            }
+        } else {
+            vec![]
+        }
+    }
+
+    /// Extend the live interval of a value to at least 'end'
+    fn extend_interval(&mut self, val: Value, end: u32) {
+        if let Some(interval) = self.intervals.get_mut(&val) {
+            if end > interval.end {
+                interval.end = end;
+            }
+        }
+    }
+
+    /// Process operands of an instruction to update liveness
+    fn process_operands(&mut self, inst: Value, live: &mut HashSet<Value>, inst_id: u32) {
+        let val_data = self.func.dfg().value(inst);
+        let mut ops = Vec::new();
+        match val_data.kind() {
+            ValueKind::Binary(bin) => {
+                ops.push(bin.lhs());
+                ops.push(bin.rhs());
+            }
+            ValueKind::Return(ret) => {
+                if let Some(ret_val) = ret.value() {
+                    ops.push(ret_val);
+                }
+            }
+            ValueKind::Load(load) => {
+                ops.push(load.src());
+            }
+            ValueKind::Store(store) => {
+                ops.push(store.value());
+                ops.push(store.dest());
+            }
+            ValueKind::Branch(br) => {
+                ops.push(br.cond());
+            }
+            ValueKind::Call(call) => {
+                ops.extend(call.args());
+            }
+            ValueKind::GetElemPtr(gep) => {
+                ops.push(gep.src());
+                ops.push(gep.index());
+            }
+            ValueKind::GetPtr(gp) => {
+                ops.push(gp.src());
+                ops.push(gp.index());
+            }
+            _ => {}
+        }
+
+        for op in ops {
+            if self.is_variable(op) {
+                self.extend_interval(op, inst_id);
+                live.insert(op);
+            }
+        }
+    }
+}

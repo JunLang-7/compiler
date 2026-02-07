@@ -1,0 +1,109 @@
+use super::interval::{LiveInterval, Location};
+use koopa::ir::Value;
+use std::collections::HashMap;
+
+/// Linear Scan Register Allocator
+pub struct LinearScan {
+    allocatable_regs: Vec<i32>,
+    spill_slot_count: i32,
+}
+
+impl LinearScan {
+    /// Create a new Linear Scan Register Allocator
+    pub fn new() -> Self {
+        // allocatable regs are caller-saved regs: s0-s11
+        // TODO: we can use callee-saved regs for some long-live values to reduce spill cost
+        let regs = vec![8, 9, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27];
+        Self {
+            allocatable_regs: regs,
+            spill_slot_count: 0,
+        }
+    }
+
+    /// Run the Linear Scan Register Allocation Algorithm
+    pub fn run(&mut self, list: &mut Vec<LiveInterval>) -> HashMap<Value, Location> {
+        // pool of free regs
+        let mut free_regs = self.allocatable_regs.clone();
+        let mut active = Vec::new();
+        let mut allocation = HashMap::new();
+
+        list.sort_by_key(|i| i.start);
+
+        for i in list.iter() {
+            self.expire_old_intervals(i, &mut active, &mut free_regs);
+            if free_regs.is_empty() {
+                self.spill_at_interval(i, &mut active, &mut allocation);
+            } else {
+                let reg = self.select_register(&free_regs, i, &active);
+                free_regs.retain(|&r| r != reg);
+                let mut interval = i.clone();
+                interval.reg = Some(reg);
+                allocation.insert(interval.value, Location::Reg(reg));
+                active.push(interval);
+            }
+        }
+
+        allocation
+    }
+
+    /// Expire the old intervals
+    fn expire_old_intervals(
+        &self,
+        i: &LiveInterval,
+        active: &mut Vec<LiveInterval>,
+        free_regs: &mut Vec<i32>,
+    ) {
+        active.retain(|j| {
+            if j.end < i.start {
+                free_regs.push(j.reg.unwrap());
+                false // remove from activw
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Spill logic when no registers are free
+    fn spill_at_interval(
+        &mut self,
+        i: &LiveInterval,
+        active: &mut Vec<LiveInterval>,
+        allocation: &mut HashMap<Value, Location>,
+    ) {
+        let (max_idx, spill) = active
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, interval)| interval.end)
+            .unwrap();
+        if spill.end > i.end {
+            let reg = spill.reg.unwrap();
+            let slot = self.alloc_spill_slot();
+            allocation.insert(spill.value, Location::Stack(slot));
+            active.remove(max_idx);
+            let mut interval = i.clone();
+            interval.reg = Some(reg);
+            allocation.insert(interval.value, Location::Reg(reg));
+            active.push(interval);
+        } else {
+            let slot = self.alloc_spill_slot();
+            allocation.insert(i.value, Location::Stack(slot));
+        }
+    }
+
+    /// select a free register from pool of free registers
+    fn select_register(
+        &self,
+        free_regs: &[i32],
+        _i: &LiveInterval,
+        _active: &Vec<LiveInterval>,
+    ) -> i32 {
+        *free_regs.first().unwrap()
+    }
+
+    /// alloc a slot index
+    fn alloc_spill_slot(&mut self) -> i32 {
+        let slot = self.spill_slot_count;
+        self.spill_slot_count += 4;
+        slot
+    }
+}
