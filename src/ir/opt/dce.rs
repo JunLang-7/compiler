@@ -1,16 +1,17 @@
+use super::side_effect::is_global_or_param;
 /// Dead Code Elimination Pass
+use koopa::ir::{BasicBlock, Function, FunctionData, Value, ValueKind};
 use std::collections::{HashMap, HashSet, VecDeque};
-use koopa::ir::{BasicBlock, FunctionData, TypeKind, Value, ValueKind};
-
 
 pub struct DeadCodeElimination<'a> {
     pub func: &'a mut FunctionData,
+    pub side_effects: &'a HashMap<Function, bool>,
 }
 
 impl<'a> DeadCodeElimination<'a> {
     /// Create a new Dead Code Elimination Pass
-    pub fn new(func: &'a mut FunctionData) -> Self {
-        Self { func }
+    pub fn new(func: &'a mut FunctionData, side_effects: &'a HashMap<Function, bool>) -> Self {
+        Self { func, side_effects }
     }
 
     /// Run the Dead Code Elimination Pass
@@ -24,11 +25,7 @@ impl<'a> DeadCodeElimination<'a> {
     }
 
     /// Initialize the data structures for DCE
-    fn init(&self) -> (
-        HashMap<Value, Vec<Value>>,
-        VecDeque<Value>,
-        HashSet<Value>,
-    ) {
+    fn init(&self) -> (HashMap<Value, Vec<Value>>, VecDeque<Value>, HashSet<Value>) {
         let mut alloc_to_stores: HashMap<Value, Vec<Value>> = HashMap::new();
         let mut worklists: VecDeque<Value> = VecDeque::new();
         let mut marked: HashSet<Value> = HashSet::new();
@@ -56,15 +53,20 @@ impl<'a> DeadCodeElimination<'a> {
                         marked.insert(inst);
                         worklists.push_back(inst);
                     }
-                    // Call instructions are treated as live conservatively
-                    ValueKind::Call(_) => {
-                        marked.insert(inst);
-                        worklists.push_back(inst);
+                    // Call instructions: only mark as live if they have side effects
+                    ValueKind::Call(call) => {
+                        let callee = call.callee();
+                        let has_side_effect =
+                            self.side_effects.get(&callee).copied().unwrap_or(true);
+                        if has_side_effect {
+                            marked.insert(inst);
+                            worklists.push_back(inst);
+                        }
                     }
                     // Store instructions: map alloc to store
                     ValueKind::Store(store) => {
                         let dest = store.dest();
-                        if self.is_global_or_param_ptr(dest) {
+                        if is_global_or_param(self.func, dest) {
                             marked.insert(inst);
                             worklists.push_back(inst);
                         } else {
@@ -81,7 +83,7 @@ impl<'a> DeadCodeElimination<'a> {
                             }
                         }
                     }
-                    _ => { /* other instructions are handled later */}
+                    _ => { /* other instructions are handled later */ }
                 }
             }
         }
@@ -173,36 +175,6 @@ impl<'a> DeadCodeElimination<'a> {
                     }
                 }
             }
-        }
-    }
-
-    fn is_global_or_param_ptr(&self, val: Value) -> bool {
-        if self.func.dfg().values().contains_key(&val) {
-            let kind = &self.func.dfg().value(val).kind();
-            match kind {
-                ValueKind::GlobalAlloc(_) => true,
-                ValueKind::Load(load) => self.is_pointer_alloc(load.src()),
-                ValueKind::GetPtr(gp) => self.is_global_or_param_ptr(gp.src()),
-                ValueKind::GetElemPtr(gep) => self.is_global_or_param_ptr(gep.src()),
-                ValueKind::Alloc(_) => false,
-                _ => false,
-            }
-        } else {
-            true
-        }
-    }
-
-    /// Check if the value is an allocation of pointer type
-    fn is_pointer_alloc(&self, val: Value) -> bool {
-        if !self.func.dfg().values().contains_key(&val) {
-            return false;
-        }
-        match self.func.dfg().value(val).kind() {
-            ValueKind::Alloc(_) => match self.func.dfg().value(val).ty().kind() {
-                TypeKind::Pointer(inner) => matches!(inner.kind(), TypeKind::Pointer(_)),
-                _ => false,
-            },
-            _ => false,
         }
     }
 
