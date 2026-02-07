@@ -3,7 +3,7 @@ mod ast;
 mod ir;
 
 use crate::asm::generate_asm;
-use crate::ir::generate_koopa;
+use crate::ir::{generate_koopa, optimize_program};
 use koopa::back::KoopaGenerator;
 use koopa::ir::Type;
 use lalrpop_util::lalrpop_mod;
@@ -37,7 +37,10 @@ fn main() -> Result<()> {
     // println!("{:#?}", ast);
 
     // 使用 Koopa 前端将 AST 转换为中间表示
-    let program = generate_koopa(&ast);
+    let mut program = generate_koopa(&ast);
+
+    // 对中间表示进行优化
+    optimize_program(&mut program);
 
     // 输出结果到文件
     match mode.as_str() {

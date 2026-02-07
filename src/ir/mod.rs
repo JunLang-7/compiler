@@ -2,6 +2,7 @@ mod context;
 mod decl;
 mod eval;
 mod exp;
+mod opt;
 mod stmt;
 mod util;
 
@@ -15,6 +16,7 @@ use util::*;
 pub use context::{GenContext, Symbol};
 pub use eval::Eval;
 pub use exp::generate_exp;
+pub use opt::optimize_program;
 
 /// Generate Koopa IR from the AST
 pub fn generate_koopa(ast: &ast::CompUnit) -> Program {
