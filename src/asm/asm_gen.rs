@@ -159,11 +159,31 @@ impl<'a> AsmGen<'a> {
         } else {
             0
         };
-        let mut offset = overflow_size;
+        let mut offset = overflow_size; // Start of local variables & spills
 
-        // 2. Saved Regs (Locals that are spilled + Allocas + Callee Saved)
+        // 2. Identify LSRA spills to shift them later
+        // LSRA results are already in `allocation`.
+        let lsra_spilled_values: Vec<Value> = allocation
+            .iter()
+            .filter_map(|(v, loc)| matches!(loc, Location::Stack(_)).then(|| *v))
+            .collect();
 
-        // Let's allocate Locals (Alloc instructions + Spilled Temps)
+        // Calculate size required by LSRA spills
+        let max_lsra_slot = allocation
+            .values()
+            .filter_map(|loc| match loc {
+                Location::Stack(slot) => Some(*slot),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(-4); // if -4, size is 0
+
+        let lsra_spill_size = max_lsra_slot + 4; // 0->4, 4->8...
+
+        // Shift LSRA spills to be AFTER Allocs? Or BEFORE?
+        // Let's put Allocs FIRST (at `offset`), then LSRA spills.
+
+        // 3. Allocate Locals (Alloc instructions)
         for (_, node) in func_data.layout().bbs() {
             for &inst in node.insts().keys() {
                 let val_data = func_data.dfg().value(inst);
@@ -184,27 +204,18 @@ impl<'a> AsmGen<'a> {
             }
         }
 
-        // Handle LSRA Spills
-        let max_spill_slot = allocation
-            .values()
-            .filter_map(|loc| match loc {
-                Location::Stack(slot) => Some(*slot),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(-1);
-
-        let spill_values: Vec<Value> = allocation.keys().cloned().collect();
-        for val in spill_values {
-            if let Location::Stack(slot) = allocation[&val] {
-                let byte_offset = offset + slot;
-                allocation.insert(val, Location::Stack(byte_offset));
+        // 4. Now shift LSRA spills
+        // They were at 0, 4, 8... relative to "start of spills"
+        for val in lsra_spilled_values {
+            if let Location::Stack(slot_idx) = allocation[&val] {
+                let new_offset = offset + slot_idx;
+                allocation.insert(val, Location::Stack(new_offset));
             }
         }
 
-        if max_spill_slot > 0 {
-            offset += max_spill_slot + 1
-        }
+        offset += lsra_spill_size;
+
+        // 5. Saved Regs (Callee saved)
 
         // Args 0-7
         for (i, &parm) in func_data.params().iter().enumerate() {

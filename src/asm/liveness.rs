@@ -26,6 +26,7 @@ impl<'a> LivenessAnalysis<'a> {
         self.number_instructions();
         self.compute_liveness();
         self.mark_cross_call();
+        self.compute_hints();
     }
 
     /// Number instructions linearly for liveness analysis
@@ -43,6 +44,7 @@ impl<'a> LivenessAnalysis<'a> {
                     end: id + 1,
                     reg: None,
                     cross_call: false,
+                    reg_hint: None,
                 },
             );
         }
@@ -209,6 +211,7 @@ impl<'a> LivenessAnalysis<'a> {
                     end: id,
                     reg: None,
                     cross_call: false,
+                    reg_hint: None,
                 },
             );
         }
@@ -248,6 +251,39 @@ impl<'a> LivenessAnalysis<'a> {
                     interval.cross_call = true;
                     break;
                 }
+            }
+        }
+    }
+
+    /// Compute register hints based on calling conventions
+    fn compute_hints(&mut self) {
+        for (&inst, _) in self.inst_ids.iter() {
+            let val_data = self.func.dfg().value(inst);
+
+            match val_data.kind() {
+                ValueKind::Call(call) => {
+                    for (i, &arg) in call.args().iter().enumerate() {
+                        if i < 8 {
+                            let target_reg = 10 + i as i32; // a0-a7
+                            if let Some(interval) = self.intervals.get_mut(&arg) {
+                                interval.reg_hint = Some(target_reg);
+                            }
+                        }
+                    }
+                    if !val_data.ty().is_unit() {
+                        if let Some(interval) = self.intervals.get_mut(&inst) {
+                            interval.reg_hint = Some(10); // a0
+                        }
+                    }
+                }
+                ValueKind::Return(ret) => {
+                    if let Some(ret_val) = ret.value() {
+                        if let Some(interval) = self.intervals.get_mut(&ret_val) {
+                            interval.reg_hint = Some(10); // a0
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }

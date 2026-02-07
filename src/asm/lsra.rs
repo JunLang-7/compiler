@@ -39,7 +39,7 @@ impl LinearScan {
 
         for i in list.iter() {
             self.expire_old_intervals(i, &mut active, &mut free_regs);
-            let candidate = self.select_register(&free_regs, i, &active);
+            let candidate = self.select_register(&free_regs, i);
             if let Some(reg) = candidate {
                 free_regs.retain(|&r| r != reg);
                 let mut interval = i.clone();
@@ -99,12 +99,18 @@ impl LinearScan {
     }
 
     /// select a free register from pool of free registers
-    fn select_register(
-        &self,
-        free_regs: &[i32],
-        i: &LiveInterval,
-        _active: &Vec<LiveInterval>,
-    ) -> Option<i32> {
+    fn select_register(&self, free_regs: &[i32], i: &LiveInterval) -> Option<i32> {
+        // try reg hint first
+        if let Some(hint) = i.reg_hint {
+            if free_regs.contains(&hint) {
+                let is_caller_saved = self.caller_saved_regs.contains(&hint);
+                let valid = if i.cross_call { !is_caller_saved } else { true };
+                if valid {
+                    return Some(hint);
+                }
+            }
+        }
+
         if i.cross_call {
             // must use callee-saved regs
             for &reg in free_regs.iter().rev() {
