@@ -1,4 +1,4 @@
-use super::interval::{LiveInterval, Location};
+use super::{LiveInterval, Location};
 use koopa::ir::Value;
 use std::collections::HashMap;
 

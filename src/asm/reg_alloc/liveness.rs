@@ -1,4 +1,4 @@
-use super::interval::LiveInterval;
+use super::LiveInterval;
 use koopa::ir::{BasicBlock, FunctionData, Value, ValueKind, layout::BasicBlockNode};
 use std::collections::{HashMap, HashSet};
 

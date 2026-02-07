@@ -1,7 +1,5 @@
 use super::calc_type_size;
-use super::interval::Location;
-use super::liveness::LivenessAnalysis;
-use super::lsra::LinearScan;
+use super::reg_alloc::{LinearScan, LivenessAnalysis, Location};
 use koopa::ir::{
     BasicBlock, BinaryOp, FunctionData, Program, Type, TypeKind, Value, ValueKind, values::*,
 };

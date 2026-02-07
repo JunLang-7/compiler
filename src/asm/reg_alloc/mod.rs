@@ -1,5 +1,8 @@
-use koopa::ir::Value;
+/// Register Allocation Module, using Linear Scan Register Allocation
+mod liveness;
+mod lsra;
 
+use koopa::ir::Value;
 /// Live Interval for a Value
 #[derive(Debug, Clone)]
 pub struct LiveInterval {
@@ -19,3 +22,6 @@ pub enum Location {
     Reg(i32),
     Stack(i32),
 }
+
+pub use liveness::LivenessAnalysis;
+pub use lsra::LinearScan;
