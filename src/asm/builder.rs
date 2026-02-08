@@ -1,16 +1,16 @@
 use super::calc_type_size;
 use super::reg_alloc::{LinearScan, LivenessAnalysis, Location};
+use super::riscv::*;
 use koopa::ir::{
     BasicBlock, BinaryOp, FunctionData, Program, Type, TypeKind, Value, ValueKind, values::*,
 };
 use std::{
     collections::{HashMap, HashSet},
-    io::{Result, Write},
+    io::Result,
 };
 
-/// Asm generator
-pub struct AsmGen<'a> {
-    writer: &'a mut dyn Write,
+/// Asm generator for a single function
+pub struct RiscvFuncBuilder<'a> {
     program: &'a Program,
     func_data: &'a FunctionData,
     // inst -> allocation (Reg or Spilled/Stack)
@@ -18,15 +18,13 @@ pub struct AsmGen<'a> {
     stack_size: i32,
     has_call: bool,
     used_callee_saved_regs: HashSet<i32>,
+    riscv_func: RiscvFunc,
+    current_insts: Vec<Inst>,
 }
 
-impl<'a> AsmGen<'a> {
+impl<'a> RiscvFuncBuilder<'a> {
     /// Create a new AsmGen instance
-    pub fn new(
-        writer: &'a mut dyn Write,
-        program: &'a Program,
-        func_data: &'a FunctionData,
-    ) -> Self {
+    pub fn new(program: &'a Program, func_data: &'a FunctionData) -> Self {
         // Run Liveness Analysis
         let mut liveness = LivenessAnalysis::new(func_data);
         liveness.analyze();
@@ -40,7 +38,7 @@ impl<'a> AsmGen<'a> {
         let mut used_callee_saved_regs = HashSet::new();
         for loc in allocation.values() {
             if let Location::Reg(r) = loc {
-                if AsmGen::is_callee_saved(*r) {
+                if Reg::is_callee_saved(&Reg::from_index(*r)) {
                     used_callee_saved_regs.insert(*r);
                 }
             }
@@ -49,68 +47,41 @@ impl<'a> AsmGen<'a> {
         let (stack_size, has_call) =
             Self::analyze_stack_frame(func_data, &mut allocation, &used_callee_saved_regs);
 
+        let riscv_func = RiscvFunc {
+            name: String::new(),
+            blocks: Vec::new(),
+            stack_size,
+        };
+        let current_insts = Vec::new();
+
         Self {
-            writer,
             program,
             func_data,
             allocation,
             stack_size,
             has_call,
             used_callee_saved_regs,
-        }
-    }
-
-    fn is_callee_saved(r: i32) -> bool {
-        // s0-s11 are callee saved (8, 9, 18-27)
-        (r == 8) || (r == 9) || (r >= 18 && r <= 27)
-    }
-
-    fn get_reg_name(reg: i32) -> &'static str {
-        match reg {
-            0 => "x0",
-            1 => "ra",
-            2 => "sp",
-            3 => "gp",
-            4 => "tp",
-            5 => "t0",
-            6 => "t1",
-            7 => "t2",
-            8 => "s0",
-            9 => "s1",
-            10 => "a0",
-            11 => "a1",
-            12 => "a2",
-            13 => "a3",
-            14 => "a4",
-            15 => "a5",
-            16 => "a6",
-            17 => "a7",
-            18 => "s2",
-            19 => "s3",
-            20 => "s4",
-            21 => "s5",
-            22 => "s6",
-            23 => "s7",
-            24 => "s8",
-            25 => "s9",
-            26 => "s10",
-            27 => "s11",
-            28 => "t3",
-            29 => "t4",
-            30 => "t5",
-            31 => "t6",
-            _ => panic!("Invalid register {}", reg),
+            riscv_func,
+            current_insts,
         }
     }
 
     /// Generate asm code for the function
-    pub fn generate(&mut self) -> Result<()> {
+    pub fn generate(mut self) -> Result<RiscvFunc> {
+        self.riscv_func.name = self.func_data.name().trim_start_matches('@').to_string();
         // prologue
         self.generate_prologue()?;
+        if !self.current_insts.is_empty() {
+            let insts = std::mem::take(&mut self.current_insts);
+            self.riscv_func.blocks.push(RiscvBlock {
+                label: String::new(),
+                insts,
+            });
+        }
 
         for (&bb, node) in self.func_data.layout().bbs() {
             let label = self.get_bb_label(bb);
-            writeln!(self.writer, "{}:", label)?;
+            self.current_insts.clear();
             for &inst in node.insts().keys() {
                 let value_data = self.func_data.dfg().value(inst);
                 match value_data.kind() {
@@ -128,8 +99,10 @@ impl<'a> AsmGen<'a> {
                     _ => unreachable!(),
                 }
             }
+            let insts = std::mem::take(&mut self.current_insts);
+            self.riscv_func.blocks.push(RiscvBlock { label, insts });
         }
-        Ok(())
+        Ok(self.riscv_func)
     }
 
     /// Analyze stack frame layout for the function
@@ -249,14 +222,14 @@ impl<'a> AsmGen<'a> {
     fn generate_prologue(&mut self) -> Result<()> {
         if self.stack_size > 0 {
             if self.stack_size < -2048 || self.stack_size > 2047 {
-                writeln!(self.writer, "\tli t0, -{}", self.stack_size)?;
-                writeln!(self.writer, "\tadd sp, sp, t0")?;
+                self.push_inst(Inst::Li(Reg::T0, -self.stack_size));
+                self.push_inst(Inst::Add(Reg::Sp, Reg::Sp, Reg::T0));
             } else {
-                writeln!(self.writer, "\taddi sp, sp, -{}", self.stack_size)?;
+                self.push_inst(Inst::Addi(Reg::Sp, Reg::Sp, -self.stack_size));
             }
             // Save RA
             if self.has_call {
-                self.safe_sw("ra", self.stack_size - 4)?;
+                self.safe_sw(Reg::Ra, self.stack_size - 4)?;
             }
 
             // Save Callee Saved Regs
@@ -267,9 +240,9 @@ impl<'a> AsmGen<'a> {
             }
             let mut saved_regs: Vec<i32> = self.used_callee_saved_regs.iter().cloned().collect();
             saved_regs.sort();
-            for reg in saved_regs {
-                let name = Self::get_reg_name(reg);
-                self.safe_sw(name, callee_save_offset)?;
+            for idx in saved_regs {
+                let reg = Reg::from_index(idx);
+                self.safe_sw(reg, callee_save_offset)?;
                 callee_save_offset -= 4;
             }
         }
@@ -278,7 +251,8 @@ impl<'a> AsmGen<'a> {
         for (i, &param) in self.func_data.params().iter().enumerate() {
             if i < 8 {
                 if let Some(Location::Stack(offset)) = self.allocation.get(&param) {
-                    writeln!(self.writer, "\tsw a{}, {}(sp)", i, offset)?;
+                    let a = Reg::from_index(10 + i as i32);
+                    self.push_inst(Inst::Sw(a, Reg::Sp, *offset));
                 }
             }
         }
@@ -287,10 +261,10 @@ impl<'a> AsmGen<'a> {
         for (i, &param) in self.func_data.params().iter().enumerate() {
             if i < 8 {
                 if let Some(Location::Reg(r)) = self.allocation.get(&param) {
-                    let r_name = Self::get_reg_name(*r);
-                    let a_name = format!("a{}", i);
-                    if r_name != a_name {
-                        writeln!(self.writer, "\tmv {}, {}", r_name, a_name)?;
+                    let r = Reg::from_index(*r);
+                    let a = Reg::from_index(10 + i as i32);
+                    if r != a {
+                        self.push_inst(Inst::Mv(r, a));
                     }
                 }
             }
@@ -309,31 +283,30 @@ impl<'a> AsmGen<'a> {
             }
             let mut saved_regs: Vec<i32> = self.used_callee_saved_regs.iter().cloned().collect();
             saved_regs.sort();
-            for reg in saved_regs {
-                let name = Self::get_reg_name(reg);
-                self.safe_lw(name, callee_save_offset)?;
+            for idx in saved_regs {
+                let reg = Reg::from_index(idx);
+                self.safe_lw(reg, callee_save_offset)?;
                 callee_save_offset -= 4;
             }
 
             if self.has_call {
-                self.safe_lw("ra", self.stack_size - 4)?;
+                self.safe_lw(Reg::Ra, self.stack_size - 4)?;
             }
             if self.stack_size < -2048 || self.stack_size > 2047 {
-                writeln!(self.writer, "\tli t0, {}", self.stack_size)?;
-                writeln!(self.writer, "\tadd sp, sp, t0")?;
+                self.push_inst(Inst::Li(Reg::T0, self.stack_size));
+                self.push_inst(Inst::Add(Reg::Sp, Reg::Sp, Reg::T0));
             } else {
-                writeln!(self.writer, "\taddi sp, sp, {}", self.stack_size)?;
+                self.push_inst(Inst::Addi(Reg::Sp, Reg::Sp, self.stack_size));
             }
         }
-        writeln!(self.writer, "\tret")?;
-        writeln!(self.writer, "")?;
+        self.push_inst(Inst::Ret);
         Ok(())
     }
 
     /// Generate asm code for a return operation
     fn generate_return(&mut self, ret: &Return) -> Result<()> {
         if let Some(ret_val) = ret.value() {
-            self.load_to_reg(ret_val, "a0")?;
+            self.load_to_reg(ret_val, Reg::A0)?;
         }
         // epilogue
         self.generate_epilogue()?;
@@ -343,75 +316,76 @@ impl<'a> AsmGen<'a> {
     /// Generate asm code for a binary operation
     fn generate_binary(&mut self, inst: Value, bin: &Binary) -> Result<()> {
         // Load operands
-        self.load_to_reg(bin.lhs(), "t0")?;
-        self.load_to_reg(bin.rhs(), "t1")?;
+        self.load_to_reg(bin.lhs(), Reg::T0)?;
+        self.load_to_reg(bin.rhs(), Reg::T1)?;
 
         match bin.op() {
-            BinaryOp::Add => writeln!(self.writer, "\tadd t0, t0, t1")?,
-            BinaryOp::Sub => writeln!(self.writer, "\tsub t0, t0, t1")?,
-            BinaryOp::Mul => writeln!(self.writer, "\tmul t0, t0, t1")?,
-            BinaryOp::Div => writeln!(self.writer, "\tdiv t0, t0, t1")?,
-            BinaryOp::Mod => writeln!(self.writer, "\trem t0, t0, t1")?,
-            BinaryOp::And => writeln!(self.writer, "\tand t0, t0, t1")?,
-            BinaryOp::Or => writeln!(self.writer, "\tor t0, t0, t1")?,
-            BinaryOp::Xor => writeln!(self.writer, "\txor t0, t0, t1")?,
-            BinaryOp::Shl => writeln!(self.writer, "\tsll t0, t0, t1")?,
-            BinaryOp::Shr => writeln!(self.writer, "\tsrl t0, t0, t1")?,
-            BinaryOp::Sar => writeln!(self.writer, "\tsra t0, t0, t1")?,
+            BinaryOp::Add => self.push_inst(Inst::Add(Reg::T0, Reg::T0, Reg::T1)),
+            BinaryOp::Sub => self.push_inst(Inst::Sub(Reg::T0, Reg::T0, Reg::T1)),
+            BinaryOp::Mul => self.push_inst(Inst::Mul(Reg::T0, Reg::T0, Reg::T1)),
+            BinaryOp::Div => self.push_inst(Inst::Div(Reg::T0, Reg::T0, Reg::T1)),
+            BinaryOp::Mod => self.push_inst(Inst::Rem(Reg::T0, Reg::T0, Reg::T1)),
+            BinaryOp::And => self.push_inst(Inst::And(Reg::T0, Reg::T0, Reg::T1)),
+            BinaryOp::Or => self.push_inst(Inst::Or(Reg::T0, Reg::T0, Reg::T1)),
+            BinaryOp::Xor => self.push_inst(Inst::Xor(Reg::T0, Reg::T0, Reg::T1)),
+            BinaryOp::Shl => self.push_inst(Inst::Sll(Reg::T0, Reg::T0, Reg::T1)),
+            BinaryOp::Shr => self.push_inst(Inst::Srl(Reg::T0, Reg::T0, Reg::T1)),
+            BinaryOp::Sar => self.push_inst(Inst::Sra(Reg::T0, Reg::T0, Reg::T1)),
             BinaryOp::Eq => {
-                writeln!(self.writer, "\txor t0, t0, t1")?;
-                writeln!(self.writer, "\tseqz t0, t0")?;
+                self.push_inst(Inst::Xor(Reg::T0, Reg::T0, Reg::T1));
+                self.push_inst(Inst::Seqz(Reg::T0, Reg::T0));
             }
             BinaryOp::NotEq => {
-                writeln!(self.writer, "\txor t0, t0, t1")?;
-                writeln!(self.writer, "\tsnez t0, t0")?;
+                self.push_inst(Inst::Xor(Reg::T0, Reg::T0, Reg::T1));
+                self.push_inst(Inst::Snez(Reg::T0, Reg::T0));
             }
-            BinaryOp::Lt => writeln!(self.writer, "\tslt t0, t0, t1")?,
-            BinaryOp::Gt => writeln!(self.writer, "\tsgt t0, t0, t1")?,
+            BinaryOp::Lt => self.push_inst(Inst::Slt(Reg::T0, Reg::T0, Reg::T1)),
+            BinaryOp::Gt => self.push_inst(Inst::Sgt(Reg::T0, Reg::T0, Reg::T1)),
             BinaryOp::Le => {
-                writeln!(self.writer, "\tsgt t0, t0, t1")?;
-                writeln!(self.writer, "\tseqz t0, t0")?;
+                self.push_inst(Inst::Sgt(Reg::T0, Reg::T0, Reg::T1));
+                self.push_inst(Inst::Seqz(Reg::T0, Reg::T0));
             }
             BinaryOp::Ge => {
-                writeln!(self.writer, "\tslt t0, t0, t1")?;
-                writeln!(self.writer, "\tseqz t0, t0")?;
+                self.push_inst(Inst::Slt(Reg::T0, Reg::T0, Reg::T1));
+                self.push_inst(Inst::Seqz(Reg::T0, Reg::T0));
             }
         }
 
-        self.store_from_reg(inst, "t0")?;
+        self.store_from_reg(inst, Reg::T0)?;
         Ok(())
     }
 
     /// Generate asm code for a load operation
     fn generate_load(&mut self, inst: Value, load: &Load) -> Result<()> {
-        self.load_to_reg(load.src(), "t0")?;
-        writeln!(self.writer, "\tlw t0, 0(t0)")?;
-        self.store_from_reg(inst, "t0")?;
+        self.load_to_reg(load.src(), Reg::T0)?;
+        // writeln!(self.writer, "\tlw t0, 0(t0)")?;
+        self.push_inst(Inst::Lw(Reg::T0, Reg::T0, 0));
+        self.store_from_reg(inst, Reg::T0)?;
         Ok(())
     }
 
     /// Generate asm code for a store operation
     fn generate_store(&mut self, store: &Store) -> Result<()> {
-        self.load_to_reg(store.value(), "t0")?;
-        self.load_to_reg(store.dest(), "t1")?;
-        writeln!(self.writer, "\tsw t0, 0(t1)")?;
+        self.load_to_reg(store.value(), Reg::T0)?;
+        self.load_to_reg(store.dest(), Reg::T1)?;
+        self.push_inst(Inst::Sw(Reg::T0, Reg::T1, 0));
         Ok(())
     }
 
     /// Generate asm code for a branch operation
     fn generate_branch(&mut self, branch: &Branch) -> Result<()> {
-        self.load_to_reg(branch.cond(), "t0")?;
+        self.load_to_reg(branch.cond(), Reg::T0)?;
         let true_label = self.get_bb_label(branch.true_bb());
         let false_label = self.get_bb_label(branch.false_bb());
-        writeln!(self.writer, "\tbnez t0, {}", true_label)?;
-        writeln!(self.writer, "\tj {}", false_label)?;
+        self.push_inst(Inst::Bnez(Reg::T0, true_label));
+        self.push_inst(Inst::J(false_label));
         Ok(())
     }
 
     /// Generate asm code for a jump operation
     fn generate_jump(&mut self, jmp: &Jump) -> Result<()> {
         let label = self.get_bb_label(jmp.target());
-        writeln!(self.writer, "\tj {}", label)?;
+        self.push_inst(Inst::J(label));
         Ok(())
     }
 
@@ -419,26 +393,28 @@ impl<'a> AsmGen<'a> {
     fn generate_call(&mut self, inst: Value, call: &Call) -> Result<()> {
         for (i, &arg) in call.args().iter().enumerate() {
             if i < 8 {
-                self.load_to_reg(arg, &format!("a{}", i))?;
+                let dst = Reg::from_index(10 + i as i32);
+                self.load_to_reg(arg, dst)?;
             } else {
-                self.load_to_reg(arg, "t0")?;
-                writeln!(self.writer, "\tsw t0, {}(sp)", (i - 8) * 4)?;
+                self.load_to_reg(arg, Reg::T0)?;
+                let offset = (i as i32 - 8) * 4;
+                self.push_inst(Inst::Sw(Reg::T0, Reg::Sp, offset));
             }
         }
         let callee = self.program.func(call.callee());
         let name = callee.name().trim_start_matches('@');
-        writeln!(self.writer, "\tcall {}", name)?;
+        self.push_inst(Inst::Call(name.to_string()));
 
         if !self.func_data.dfg().value(inst).ty().is_unit() {
-            self.store_from_reg(inst, "a0")?;
+            self.store_from_reg(inst, Reg::A0)?;
         }
         Ok(())
     }
 
     /// Generate asm code for a get element pointer operation
     fn generate_get_elem_ptr(&mut self, inst: Value, gep: &GetElemPtr) -> Result<()> {
-        self.load_to_reg(gep.src(), "t0")?;
-        self.load_to_reg(gep.index(), "t1")?;
+        self.load_to_reg(gep.src(), Reg::T0)?;
+        self.load_to_reg(gep.index(), Reg::T1)?;
         let src_ty = self.value_ty(gep.src());
         let arr_ty = match src_ty.kind() {
             TypeKind::Pointer(base) => base,
@@ -451,21 +427,21 @@ impl<'a> AsmGen<'a> {
         };
 
         if elem_size == 4 {
-            writeln!(self.writer, "\tslli t1, t1, 2")?;
+            self.push_inst(Inst::Slli(Reg::T1, Reg::T1, 2));
         } else {
-            writeln!(self.writer, "\tli t2, {}", elem_size)?;
-            writeln!(self.writer, "\tmul t1, t1, t2")?;
+            self.push_inst(Inst::Li(Reg::T2, elem_size as i32));
+            self.push_inst(Inst::Mul(Reg::T1, Reg::T1, Reg::T2));
         }
 
-        writeln!(self.writer, "\tadd t0, t0, t1")?;
-        self.store_from_reg(inst, "t0")?;
+        self.push_inst(Inst::Add(Reg::T0, Reg::T0, Reg::T1));
+        self.store_from_reg(inst, Reg::T0)?;
         Ok(())
     }
 
     /// Generate asm code for a get pointer operation
     fn generate_get_ptr(&mut self, inst: Value, gp: &GetPtr) -> Result<()> {
-        self.load_to_reg(gp.src(), "t0")?;
-        self.load_to_reg(gp.index(), "t1")?;
+        self.load_to_reg(gp.src(), Reg::T0)?;
+        self.load_to_reg(gp.index(), Reg::T1)?;
         let src_ty = self.value_ty(gp.src());
         let ptr_ty = match src_ty.kind() {
             TypeKind::Pointer(base) => base,
@@ -474,24 +450,24 @@ impl<'a> AsmGen<'a> {
         let elem_size = calc_type_size(ptr_ty);
 
         if elem_size == 4 {
-            writeln!(self.writer, "\tslli t1, t1, 2")?;
+            self.push_inst(Inst::Slli(Reg::T1, Reg::T1, 2));
         } else {
-            writeln!(self.writer, "\tli t2, {}", elem_size)?;
-            writeln!(self.writer, "\tmul t1, t1, t2")?;
+            self.push_inst(Inst::Li(Reg::T2, elem_size as i32));
+            self.push_inst(Inst::Mul(Reg::T1, Reg::T1, Reg::T2));
         }
 
-        writeln!(self.writer, "\tadd t0, t0, t1")?;
-        self.store_from_reg(inst, "t0")?;
+        self.push_inst(Inst::Add(Reg::T0, Reg::T0, Reg::T1));
+        self.store_from_reg(inst, Reg::T0)?;
         Ok(())
     }
 
     /// Load a value into a register
-    fn load_to_reg(&mut self, val: Value, reg: &str) -> Result<()> {
+    fn load_to_reg(&mut self, val: Value, reg: Reg) -> Result<()> {
         if !self.allocation.contains_key(&val) {
             if let Some(value_data) = self.func_data.dfg().values().get(&val) {
                 match value_data.kind() {
                     ValueKind::Integer(i) => {
-                        writeln!(self.writer, "\tli {}, {}", reg, i.value())?;
+                        self.push_inst(Inst::Li(reg, i.value()));
                         return Ok(());
                     }
                     _ => {}
@@ -506,7 +482,7 @@ impl<'a> AsmGen<'a> {
                         .as_deref()
                         .unwrap()
                         .trim_start_matches('@');
-                    writeln!(self.writer, "\tla {}, {}", reg, name)?;
+                    self.push_inst(Inst::La(reg, name.to_string()));
                 }
                 _ => panic!("Unknown value source {:?} {:?}", val, global_data.kind()),
             }
@@ -516,9 +492,9 @@ impl<'a> AsmGen<'a> {
         match loc {
             // If value is allocated to a register, move it.
             Location::Reg(r) => {
-                let r_name = Self::get_reg_name(r);
-                if r_name != reg {
-                    writeln!(self.writer, "\tmv {}, {}", reg, r_name)?;
+                let r = Reg::from_index(r);
+                if r != reg {
+                    self.push_inst(Inst::Mv(reg, r));
                 }
             }
 
@@ -529,10 +505,10 @@ impl<'a> AsmGen<'a> {
                 if let ValueKind::Alloc(_) = val_kind {
                     // Alloc: Load address (addi)
                     if offset < -2048 || offset > 2047 {
-                        writeln!(self.writer, "\tli {}, {}", reg, offset)?;
-                        writeln!(self.writer, "\tadd {}, {}, sp", reg, reg)?;
+                        self.push_inst(Inst::Li(reg, offset));
+                        self.push_inst(Inst::Add(reg, reg, Reg::Sp));
                     } else {
-                        writeln!(self.writer, "\taddi {}, sp, {}", reg, offset)?;
+                        self.push_inst(Inst::Addi(reg, Reg::Sp, offset));
                     }
                 } else {
                     // Spill / Args: load vals (lw)
@@ -544,7 +520,7 @@ impl<'a> AsmGen<'a> {
     }
 
     /// Store a register value into a value
-    fn store_from_reg(&mut self, val: Value, reg: &str) -> Result<()> {
+    fn store_from_reg(&mut self, val: Value, reg: Reg) -> Result<()> {
         if !self.allocation.contains_key(&val) {
             // Global stores not handled here typically?
             let global_data = self.program.borrow_value(val);
@@ -554,16 +530,16 @@ impl<'a> AsmGen<'a> {
                     .as_deref()
                     .unwrap()
                     .trim_start_matches('@');
-                writeln!(self.writer, "\tla t2, {}", name)?;
-                writeln!(self.writer, "\tsw {}, 0(t2)", reg)?;
+                self.push_inst(Inst::La(Reg::T2, name.to_string()));
+                self.push_inst(Inst::Sw(reg, Reg::T2, 0));
             }
         }
         let loc = self.allocation[&val];
         match loc {
             Location::Reg(r) => {
-                let r_name = Self::get_reg_name(r);
-                if r_name != reg {
-                    writeln!(self.writer, "\tmv {}, {}", r_name, reg)?;
+                let r = Reg::from_index(r);
+                if r != reg {
+                    self.push_inst(Inst::Mv(r, reg));
                 }
             }
             Location::Stack(offset) => {
@@ -593,26 +569,31 @@ impl<'a> AsmGen<'a> {
         }
     }
 
+    /// Helper to push an instruction to current block
+    fn push_inst(&mut self, inst: Inst) {
+        self.current_insts.push(inst);
+    }
+
     /// Safely load a value from stack into register with offset checking
-    fn safe_lw(&mut self, src: &str, offset: i32) -> Result<()> {
+    fn safe_lw(&mut self, rd: Reg, offset: i32) -> Result<()> {
         if offset < -2048 || offset > 2047 {
-            writeln!(self.writer, "\tli t2, {}", offset)?;
-            writeln!(self.writer, "\tadd t2, t2, sp")?;
-            writeln!(self.writer, "\tlw {}, 0(t2)", src)?;
+            self.push_inst(Inst::Li(Reg::T2, offset));
+            self.push_inst(Inst::Add(Reg::T2, Reg::T2, Reg::Sp));
+            self.push_inst(Inst::Lw(rd, Reg::T2, 0));
         } else {
-            writeln!(self.writer, "\tlw {}, {}(sp)", src, offset)?;
+            self.push_inst(Inst::Lw(rd, Reg::Sp, offset));
         }
         Ok(())
     }
 
     /// Safely store a register value into stack with offset checking
-    fn safe_sw(&mut self, src: &str, offset: i32) -> Result<()> {
+    fn safe_sw(&mut self, src: Reg, offset: i32) -> Result<()> {
         if offset < -2048 || offset > 2047 {
-            writeln!(self.writer, "\tli t2, {}", offset)?;
-            writeln!(self.writer, "\tadd t2, t2, sp")?;
-            writeln!(self.writer, "\tsw {}, 0(t2)", src)?;
+            self.push_inst(Inst::Li(Reg::T2, offset));
+            self.push_inst(Inst::Add(Reg::T2, Reg::T2, Reg::Sp));
+            self.push_inst(Inst::Sw(src, Reg::T2, 0));
         } else {
-            writeln!(self.writer, "\tsw {}, {}(sp)", src, offset)?;
+            self.push_inst(Inst::Sw(src, Reg::Sp, offset));
         }
         Ok(())
     }

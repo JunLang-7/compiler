@@ -1,72 +1,76 @@
-mod asm_gen;
+mod builder;
 mod reg_alloc;
+mod riscv;
 
-use asm_gen::AsmGen;
+use builder::RiscvFuncBuilder;
 use koopa::ir::{Program, Type, TypeKind, Value, ValueKind};
+use riscv::{RiscvProg, RiscvFunc};
 use std::io::{Result, Write};
 
-/// Generate `RISC-V` assembly from `Koopa IR`
+/// Write RISC-V assembly code to `writer` from `Koopa IR` program
 pub fn generate_asm(program: &Program, writer: &mut dyn Write) -> Result<()> {
-    generate_data_section(program, writer)?;
-    generate_text_section(program, writer)?;
+    let prog = build_riscv_prog(program)?;
+    write!(writer, "{}", prog)?;
     Ok(())
 }
 
-/// Generate `.data` section for global variables
-fn generate_data_section(program: &Program, writer: &mut dyn Write) -> Result<()> {
-    writeln!(writer, "\t.data")?;
+/// Build `RISC-V` program from `Koopa IR`
+fn build_riscv_prog(program: &Program) -> Result<RiscvProg> {
+    let mut prog = RiscvProg::new();
+    prog.data_sec = build_data_section(program);
+    prog.text_sec = build_text_section(program)?;
+    Ok(prog)
+}
+
+/// Build `.data` section for global variables
+fn build_data_section(program: &Program) -> Vec<String> {
+    let mut lines = Vec::new();
     for &val in program.inst_layout() {
         let data = program.borrow_value(val);
         if let ValueKind::GlobalAlloc(alloc) = data.kind() {
             let name = data.name().as_deref().unwrap().trim_start_matches('@');
-            writeln!(writer, "\t.global {}", name)?;
-            writeln!(writer, "{}:", name)?;
+            lines.push(format!("\t.global {}", name));
+            lines.push(format!("{}:", name));
             // 处理初值
             let init = alloc.init();
-            generate_global_init(program, writer, init)?;
+            build_global_init(program, init, &mut lines);
         }
     }
-    writeln!(writer, "")?;
-    Ok(())
+    lines
 }
 
-/// Generate `.text` section for functions
-fn generate_text_section(program: &Program, writer: &mut dyn Write) -> Result<()> {
+/// Build `.text` section for functions
+fn build_text_section(program: &Program) -> Result<Vec<RiscvFunc>> {
+    let mut funcs = Vec::new();
     for &func in program.func_layout() {
         let func_data = program.func(func);
         if func_data.layout().entry_bb().is_none() {
             continue; // skip declarations
         }
-        let name = func_data.name().trim_start_matches('@');
-        writeln!(writer, "\t.text")?;
-        writeln!(writer, "\t.globl {}", name)?;
-        writeln!(writer, "{}:", name)?;
-
-        let mut asm_gen = AsmGen::new(writer, program, func_data);
-        asm_gen.generate()?;
+        let asm_gen = RiscvFuncBuilder::new(program, func_data);
+        funcs.push(asm_gen.generate()?);
     }
-    Ok(())
+    Ok(funcs)
 }
 
-/// Generate global variable initial value
-fn generate_global_init(program: &Program, writer: &mut dyn Write, init: Value) -> Result<()> {
+/// Build global variable initial value
+fn build_global_init(program: &Program, init: Value, out: &mut Vec<String>) {
     let val_data = program.borrow_value(init);
     match val_data.kind() {
         ValueKind::Integer(int) => {
-            writeln!(writer, "\t.word {}", int.value())?;
+            out.push(format!("\t.word {}", int.value()));
         }
         ValueKind::ZeroInit(_) => {
             let size = calc_type_size(val_data.ty());
-            writeln!(writer, "\t.zero {}", size)?;
+            out.push(format!("\t.zero {}", size));
         }
         ValueKind::Aggregate(agg) => {
             for elem in agg.elems() {
-                generate_global_init(program, writer, *elem)?;
+                build_global_init(program, *elem, out);
             }
         }
         _ => panic!("Invaild global init value"),
     }
-    Ok(())
 }
 
 /// Calcuate size of `Type` of RVI32
