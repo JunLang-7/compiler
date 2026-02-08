@@ -1,15 +1,20 @@
 mod builder;
+mod opt;
 mod reg_alloc;
 mod riscv;
 
 use builder::RiscvFuncBuilder;
 use koopa::ir::{Program, Type, TypeKind, Value, ValueKind};
-use riscv::{RiscvProg, RiscvFunc};
+use opt::peephole_optimize;
+use riscv::{RiscvFunc, RiscvProg};
 use std::io::{Result, Write};
 
 /// Write RISC-V assembly code to `writer` from `Koopa IR` program
 pub fn generate_asm(program: &Program, writer: &mut dyn Write) -> Result<()> {
-    let prog = build_riscv_prog(program)?;
+    let mut prog = build_riscv_prog(program)?;
+    // Apply peephole optimization
+    peephole_optimize(&mut prog);
+
     write!(writer, "{}", prog)?;
     Ok(())
 }
