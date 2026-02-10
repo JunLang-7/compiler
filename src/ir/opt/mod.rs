@@ -1,7 +1,9 @@
+use const_prop::ConstantPropagation;
 use dce::DeadCodeElimination;
 use koopa::ir::Program;
 use side_effect::analyze_side_effects;
 
+mod const_prop;
 mod dce;
 mod side_effect;
 
@@ -17,6 +19,11 @@ pub fn optimize_program(program: &mut Program) {
             continue;
         }
 
+        // Constant propagation pass should be run before dead code elimination,
+        // as it may expose more opportunities for DCE.
+        let mut const_prop = ConstantPropagation::new(func_data);
+        const_prop.run();
+        // Dead code elimination pass
         let mut dce = DeadCodeElimination::new(func_data, &side_effects);
         dce.run();
     }
