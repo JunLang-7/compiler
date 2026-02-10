@@ -84,8 +84,9 @@ Dead Code Elimination
 - **冗余跳转消除**：当无条件跳转的目标块紧邻当前块之后时，直接移除该跳转指令。
 - **不可达代码消除**：基于控制流图的可达性分析，移除从函数入口无法到达的基本块（包括因常量折叠或逻辑优化产生的不可达路径）。
 
-**常量传播**（Constant Propagation）: 
+### 常量传播（Constant Propagation）: 
 - 支持二元运算常量折叠与同基本块的局部内存常量传播，并配合 DCE 进一步简化 IR。
+- 实现条件分支优化，将条件分支根据条件转换为绝对分支，实现分支简化。
 
 ## 构建与运行
 
@@ -123,6 +124,7 @@ cargo run -- [mode] [input_file] -o [output_file]
 - mode:
     - `-koopa`: 将 SysY 源码编译为 Koopa IR (.koopa).
     - `-riscv`: 将 SysY 源码编译为 RISC-V 汇编 (.S).
+    - `-perf`: 将 SysY 源码编译为 RISC-V 汇编 (.S), 用于性能测试.
 - input_file: 输入的 .c 或 .sy 源文件路径。
 - output_file: 输出文件路径。
 
@@ -160,6 +162,7 @@ cargo run -- -riscv hello.c -o hello.S
 │   │   ├── eval.rs     # 编译期常量求值
 │   │   ├── util.rs     # 工具函数
 │   │   └── opt/        # 中间代码优化
+|   |       ├── const_prop.rs   # 常量传播
 │   │       ├── mod.rs          # 优化模块入口
 │   │       ├── dce.rs          # 死代码消除
 │   │       └── side_effect.rs  # 副作用分析
@@ -168,6 +171,7 @@ cargo run -- -riscv hello.c -o hello.S
 │       ├── builder.rs      # 汇编生成器（原 asm_gen.rs）
 │       ├── riscv.rs        # RISC-V 指令与程序结构定义
 │       ├── opt/            # 汇编层优化
+│       │   └── cfg.rs      # 控制流化简
 │       │   └── peephole.rs # 窥孔优化
 │       └── reg_alloc/      # 寄存器分配
 │           ├── mod.rs      # 寄存器分配模块入口

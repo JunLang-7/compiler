@@ -163,13 +163,10 @@ impl<'a> ConstantPropagation<'a> {
                 existing_inst.insert(int.value(), val);
             }
         }
-        
+
         // Collect values to process first (before mutable borrows)
-        let values_to_process: Vec<(Value, LatticeVal)> = self
-            .values
-            .iter()
-            .map(|(&val, &lat)| (val, lat))
-            .collect();
+        let values_to_process: Vec<(Value, LatticeVal)> =
+            self.values.iter().map(|(&val, &lat)| (val, lat)).collect();
 
         let mut replacements = HashMap::new();
 
@@ -189,9 +186,9 @@ impl<'a> ConstantPropagation<'a> {
                 if matches!(
                     val_kind,
                     ValueKind::Binary(_)
-                    | ValueKind::Load(_)
-                    | ValueKind::GetElemPtr(_)
-                    | ValueKind::GetPtr(_)
+                        | ValueKind::Load(_)
+                        | ValueKind::GetElemPtr(_)
+                        | ValueKind::GetPtr(_)
                 ) {
                     let const_val = self.get_or_create_const(&mut existing_inst, c);
                     replacements.insert(val, const_val);
@@ -263,9 +260,9 @@ impl<'a> ConstantPropagation<'a> {
                     BinaryOp::And => l & r,
                     BinaryOp::Or => l | r,
                     BinaryOp::Xor => l ^ r,
-                    BinaryOp::Shl => l << r,
-                    BinaryOp::Shr => ((l as u32) >> r) as i32,
-                    BinaryOp::Sar => l >> r,
+                    BinaryOp::Shl => l.wrapping_shl(r as u32),
+                    BinaryOp::Shr => (l as u32).wrapping_shr(r as u32) as i32,
+                    BinaryOp::Sar => l.wrapping_shr(r as u32),
                     BinaryOp::Eq => (l == r) as i32,
                     BinaryOp::NotEq => (l != r) as i32,
                     BinaryOp::Lt => (l < r) as i32,
@@ -278,6 +275,22 @@ impl<'a> ConstantPropagation<'a> {
         }
     }
 
+    /// Helper method to get the new operand value for rewriting
+    fn get_new_op(
+        &mut self,
+        op: Value,
+        replacements: &HashMap<Value, Value>,
+        existing_inst: &mut HashMap<i32, Value>,
+    ) -> Option<Value> {
+        if let Some(&new_val) = replacements.get(&op) {
+            return Some(new_val);
+        }
+        if let Some(LatticeVal::Const(c)) = self.values.get(&op) {
+            return Some(self.get_or_create_const(existing_inst, *c));
+        }
+        None
+    }
+
     /// Rewrite the operands of an instruction based on the constant propagation results
     /// returns true if any changes were made
     fn rewrite_inst_op(
@@ -288,19 +301,14 @@ impl<'a> ConstantPropagation<'a> {
     ) -> bool {
         let mut changed = false;
         let val_data = self.func.dfg().value(inst).clone();
-        let mut get_new_op = |op: Value| -> Option<Value> {
-            if let Some(&new_val) = replacements.get(&op) {
-                return Some(new_val);
-            } 
-            if let Some(LatticeVal::Const(c)) = self.values.get(&op) {
-                return Some(self.get_or_create_const(existing_inst, *c));
-            }
-            None
-        };
         match val_data.kind() {
             ValueKind::Binary(bin) => {
-                let new_lhs = get_new_op(bin.lhs()).unwrap_or(bin.lhs());
-                let new_rhs = get_new_op(bin.rhs()).unwrap_or(bin.rhs());
+                let new_lhs = self
+                    .get_new_op(bin.lhs(), replacements, existing_inst)
+                    .unwrap_or(bin.lhs());
+                let new_rhs = self
+                    .get_new_op(bin.rhs(), replacements, existing_inst)
+                    .unwrap_or(bin.rhs());
                 if new_lhs != bin.lhs() || new_rhs != bin.rhs() {
                     changed = true;
                     self.func
@@ -310,20 +318,78 @@ impl<'a> ConstantPropagation<'a> {
                 }
             }
             ValueKind::Branch(br) => {
-                let new_cond = get_new_op(br.cond()).unwrap_or(br.cond());
-                if new_cond != br.cond() {
+                let new_cond = self
+                    .get_new_op(br.cond(), replacements, existing_inst)
+                    .unwrap_or(br.cond());
+                let cond_is_const = matches!(
+                    self.func.dfg().value(new_cond).kind(),
+                    ValueKind::Integer(_)
+                );
+                if cond_is_const {
+                    let val =
+                        if let ValueKind::Integer(int) = self.func.dfg().value(new_cond).kind() {
+                            int.value()
+                        } else {
+                            panic!("Expected integer value");
+                        };
+
+                    let (target_bb, target_args) = if val != 0 {
+                        (br.true_bb(), br.true_args())
+                    } else {
+                        (br.false_bb(), br.false_args())
+                    };
+
+                    let new_target_args: Vec<Value> = target_args
+                        .iter()
+                        .map(|&arg| {
+                            self.get_new_op(arg, replacements, existing_inst)
+                                .unwrap_or(arg)
+                        })
+                        .collect();
                     changed = true;
+                    // cond branch ro absolute jump
                     self.func
                         .dfg_mut()
                         .replace_value_with(inst)
-                        .branch(new_cond, br.true_bb(), br.false_bb());
+                        .jump_with_args(target_bb, new_target_args);
+                } else if new_cond != br.cond() {
+                    changed = true;
+                    let new_true_args: Vec<Value> = br
+                        .true_args()
+                        .iter()
+                        .map(|&arg| {
+                            self.get_new_op(arg, replacements, existing_inst)
+                                .unwrap_or(arg)
+                        })
+                        .collect();
+                    let new_false_args: Vec<Value> = br
+                        .false_args()
+                        .iter()
+                        .map(|&arg| {
+                            self.get_new_op(arg, replacements, existing_inst)
+                                .unwrap_or(arg)
+                        })
+                        .collect();
+                    self.func
+                        .dfg_mut()
+                        .replace_value_with(inst)
+                        .branch_with_args(
+                            new_cond,
+                            br.true_bb(),
+                            br.false_bb(),
+                            new_true_args,
+                            new_false_args,
+                        );
                 }
             }
             ValueKind::Call(call) => {
                 let new_args: Vec<Value> = call
                     .args()
                     .iter()
-                    .map(|&arg| get_new_op(arg).unwrap_or(arg))
+                    .map(|&arg| {
+                        self.get_new_op(arg, replacements, existing_inst)
+                            .unwrap_or(arg)
+                    })
                     .collect();
                 if new_args.iter().zip(call.args()).any(|(&n, &o)| n != o) {
                     changed = true;
@@ -335,7 +401,9 @@ impl<'a> ConstantPropagation<'a> {
             }
             ValueKind::Return(ret) => {
                 if let Some(val) = ret.value() {
-                    let new_val = get_new_op(val).unwrap_or(val);
+                    let new_val = self
+                        .get_new_op(val, replacements, existing_inst)
+                        .unwrap_or(val);
                     if new_val != val {
                         changed = true;
                         self.func
@@ -349,7 +417,9 @@ impl<'a> ConstantPropagation<'a> {
                 // src is ptr, not const int
             }
             ValueKind::Store(store) => {
-                let new_val = get_new_op(store.value()).unwrap_or(store.value());
+                let new_val = self
+                    .get_new_op(store.value(), replacements, existing_inst)
+                    .unwrap_or(store.value());
                 if new_val != store.value() {
                     changed = true;
                     self.func
@@ -359,8 +429,12 @@ impl<'a> ConstantPropagation<'a> {
                 }
             }
             ValueKind::GetElemPtr(gep) => {
-                let new_src = get_new_op(gep.src()).unwrap_or(gep.src());
-                let new_index = get_new_op(gep.index()).unwrap_or(gep.index());
+                let new_src = self
+                    .get_new_op(gep.src(), replacements, existing_inst)
+                    .unwrap_or(gep.src());
+                let new_index = self
+                    .get_new_op(gep.index(), replacements, existing_inst)
+                    .unwrap_or(gep.index());
                 if new_src != gep.src() || new_index != gep.index() {
                     changed = true;
                     self.func
@@ -370,8 +444,12 @@ impl<'a> ConstantPropagation<'a> {
                 }
             }
             ValueKind::GetPtr(gp) => {
-                let new_src = get_new_op(gp.src()).unwrap_or(gp.src());
-                let new_index = get_new_op(gp.index()).unwrap_or(gp.index());
+                let new_src = self
+                    .get_new_op(gp.src(), replacements, existing_inst)
+                    .unwrap_or(gp.src());
+                let new_index = self
+                    .get_new_op(gp.index(), replacements, existing_inst)
+                    .unwrap_or(gp.index());
                 if new_src != gp.src() || new_index != gp.index() {
                     changed = true;
                     self.func
