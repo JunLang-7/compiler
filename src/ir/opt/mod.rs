@@ -7,6 +7,8 @@ mod const_prop;
 mod dce;
 mod side_effect;
 
+const MAX_OPT_PASSES: usize = 10;
+
 pub fn optimize_program(program: &mut Program) {
     // Analyze side effects for all functions
     let side_effects = analyze_side_effects(program);
@@ -19,12 +21,19 @@ pub fn optimize_program(program: &mut Program) {
             continue;
         }
 
-        // Constant propagation pass should be run before dead code elimination,
-        // as it may expose more opportunities for DCE.
-        let mut const_prop = ConstantPropagation::new(func_data);
-        const_prop.run();
-        // Dead code elimination pass
-        let mut dce = DeadCodeElimination::new(func_data, &side_effects);
-        dce.run();
+        let mut changed = true;
+        let mut pass_count = 0;
+        while changed && pass_count < MAX_OPT_PASSES {
+            changed = false;
+            pass_count += 1;
+
+            // Apply optimization passes
+            // Constant propagation pass
+            let mut const_prop = ConstantPropagation::new(func_data);
+            changed |= const_prop.run();
+            // Dead code elimination pass
+            let mut dce = DeadCodeElimination::new(func_data, &side_effects);
+            changed |= dce.run();
+        }
     }
 }

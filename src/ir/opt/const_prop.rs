@@ -31,11 +31,11 @@ impl<'a> ConstantPropagation<'a> {
     }
 
     /// Implementation of constant propagation algorithm
-    pub fn run(&mut self) {
+    pub fn run(&mut self) -> bool {
         self.build_use_def();
         self.init();
         self.propagate();
-        self.rewrite();
+        self.rewrite()
     }
 
     /// Build use-def chains for all values in the function
@@ -153,7 +153,9 @@ impl<'a> ConstantPropagation<'a> {
     }
 
     /// Rewrite the IR based on the final lattice values after propagation
-    fn rewrite(&mut self) {
+    /// returns true if any changes were made
+    fn rewrite(&mut self) -> bool {
+        let mut changed = false;
         // Collect existing integer constants to reuse values
         let mut existing_inst: HashMap<i32, Value> = HashMap::new();
         for (&val, val_data) in self.func.dfg().values() {
@@ -198,8 +200,9 @@ impl<'a> ConstantPropagation<'a> {
         }
         // perform the replacements in the IR
         for inst in bb_insts {
-            self.rewrite_inst_op(inst, &replacements, &mut existing_inst);
+            changed |= self.rewrite_inst_op(inst, &replacements, &mut existing_inst);
         }
+        changed
     }
 
     /// Process the worklist of values that may have changed lattice values
@@ -276,12 +279,14 @@ impl<'a> ConstantPropagation<'a> {
     }
 
     /// Rewrite the operands of an instruction based on the constant propagation results
+    /// returns true if any changes were made
     fn rewrite_inst_op(
         &mut self,
         inst: Value,
         replacements: &HashMap<Value, Value>,
         existing_inst: &mut HashMap<i32, Value>,
-    ) {
+    ) -> bool {
+        let mut changed = false;
         let val_data = self.func.dfg().value(inst).clone();
         let mut get_new_op = |op: Value| -> Option<Value> {
             if let Some(&new_val) = replacements.get(&op) {
@@ -296,17 +301,23 @@ impl<'a> ConstantPropagation<'a> {
             ValueKind::Binary(bin) => {
                 let new_lhs = get_new_op(bin.lhs()).unwrap_or(bin.lhs());
                 let new_rhs = get_new_op(bin.rhs()).unwrap_or(bin.rhs());
-                self.func
-                    .dfg_mut()
-                    .replace_value_with(inst)
-                    .binary(bin.op(), new_lhs, new_rhs);
+                if new_lhs != bin.lhs() || new_rhs != bin.rhs() {
+                    changed = true;
+                    self.func
+                        .dfg_mut()
+                        .replace_value_with(inst)
+                        .binary(bin.op(), new_lhs, new_rhs);
+                }
             }
             ValueKind::Branch(br) => {
                 let new_cond = get_new_op(br.cond()).unwrap_or(br.cond());
-                self.func
-                    .dfg_mut()
-                    .replace_value_with(inst)
-                    .branch(new_cond, br.true_bb(), br.false_bb());
+                if new_cond != br.cond() {
+                    changed = true;
+                    self.func
+                        .dfg_mut()
+                        .replace_value_with(inst)
+                        .branch(new_cond, br.true_bb(), br.false_bb());
+                }
             }
             ValueKind::Call(call) => {
                 let new_args: Vec<Value> = call
@@ -314,18 +325,24 @@ impl<'a> ConstantPropagation<'a> {
                     .iter()
                     .map(|&arg| get_new_op(arg).unwrap_or(arg))
                     .collect();
-                self.func
-                    .dfg_mut()
-                    .replace_value_with(inst)
-                    .call(call.callee(), new_args);
+                if new_args.iter().zip(call.args()).any(|(&n, &o)| n != o) {
+                    changed = true;
+                    self.func
+                        .dfg_mut()
+                        .replace_value_with(inst)
+                        .call(call.callee(), new_args);
+                }
             }
             ValueKind::Return(ret) => {
                 if let Some(val) = ret.value() {
                     let new_val = get_new_op(val).unwrap_or(val);
-                    self.func
-                        .dfg_mut()
-                        .replace_value_with(inst)
-                        .ret(Some(new_val));
+                    if new_val != val {
+                        changed = true;
+                        self.func
+                            .dfg_mut()
+                            .replace_value_with(inst)
+                            .ret(Some(new_val));
+                    }
                 }
             }
             ValueKind::Load(_) => {
@@ -333,29 +350,39 @@ impl<'a> ConstantPropagation<'a> {
             }
             ValueKind::Store(store) => {
                 let new_val = get_new_op(store.value()).unwrap_or(store.value());
-                self.func
-                    .dfg_mut()
-                    .replace_value_with(inst)
-                    .store(new_val, store.dest());
+                if new_val != store.value() {
+                    changed = true;
+                    self.func
+                        .dfg_mut()
+                        .replace_value_with(inst)
+                        .store(new_val, store.dest());
+                }
             }
             ValueKind::GetElemPtr(gep) => {
                 let new_src = get_new_op(gep.src()).unwrap_or(gep.src());
                 let new_index = get_new_op(gep.index()).unwrap_or(gep.index());
-                self.func
-                    .dfg_mut()
-                    .replace_value_with(inst)
-                    .get_elem_ptr(new_src, new_index);
+                if new_src != gep.src() || new_index != gep.index() {
+                    changed = true;
+                    self.func
+                        .dfg_mut()
+                        .replace_value_with(inst)
+                        .get_elem_ptr(new_src, new_index);
+                }
             }
             ValueKind::GetPtr(gp) => {
                 let new_src = get_new_op(gp.src()).unwrap_or(gp.src());
                 let new_index = get_new_op(gp.index()).unwrap_or(gp.index());
-                self.func
-                    .dfg_mut()
-                    .replace_value_with(inst)
-                    .get_ptr(new_src, new_index);
+                if new_src != gp.src() || new_index != gp.index() {
+                    changed = true;
+                    self.func
+                        .dfg_mut()
+                        .replace_value_with(inst)
+                        .get_ptr(new_src, new_index);
+                }
             }
             _ => {}
         }
+        changed
     }
 
     /// Helper to check if a value is a direct alloc (not through pointers)

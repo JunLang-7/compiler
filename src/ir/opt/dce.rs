@@ -15,13 +15,14 @@ impl<'a> DeadCodeElimination<'a> {
     }
 
     /// Run the Dead Code Elimination Pass
-    pub fn run(&mut self) {
+    /// returns true if any code was eliminated
+    pub fn run(&mut self) -> bool {
         // Initialize map from alloc to store instructions
         let (alloc_to_stores, mut worklists, mut marked) = self.init();
         // propagate liveness through related instructions
         self.mark(&alloc_to_stores, &mut worklists, &mut marked);
         // remove unmarked instructions
-        self.sweep(&marked);
+        self.sweep(&marked)
     }
 
     /// Initialize the data structures for DCE
@@ -138,7 +139,9 @@ impl<'a> DeadCodeElimination<'a> {
     }
 
     /// Remove unmarked instructions from the function
-    fn sweep(&mut self, marked: &HashSet<Value>) {
+    /// returns true if any instructions were removed
+    fn sweep(&mut self, marked: &HashSet<Value>) -> bool {
+        let mut changed = false;
         let mut insts_by_bb: HashMap<BasicBlock, Vec<Value>> = HashMap::new();
         let mut dead_set: HashSet<Value> = HashSet::new();
         for (&bb, node) in self.func.layout().bbs() {
@@ -172,10 +175,12 @@ impl<'a> DeadCodeElimination<'a> {
                         self.func.dfg_mut().remove_value(inst);
                         removed.insert(inst);
                         progress = true;
+                        changed = true;
                     }
                 }
             }
         }
+        changed
     }
 
     /// Recursively get the base allocation for a given value
