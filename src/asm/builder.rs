@@ -20,6 +20,8 @@ pub struct RiscvFuncBuilder<'a> {
     used_callee_saved_regs: HashSet<i32>,
     riscv_func: RiscvFunc,
     current_insts: Vec<Inst>,
+    // BB -> unique label (handles Koopa's duplicate BB names)
+    bb_labels: HashMap<BasicBlock, String>,
 }
 
 impl<'a> RiscvFuncBuilder<'a> {
@@ -63,12 +65,33 @@ impl<'a> RiscvFuncBuilder<'a> {
             used_callee_saved_regs,
             riscv_func,
             current_insts,
+            bb_labels: HashMap::new(),
         }
     }
 
     /// Generate asm code for the function
     pub fn generate(mut self) -> Result<RiscvFunc> {
         self.riscv_func.name = self.func_data.name().trim_start_matches('@').to_string();
+
+        // Build unique BB label map (Koopa DFG may store duplicate names)
+        let func_name = self.func_data.name().trim_start_matches('@').to_string();
+        let mut name_counts: HashMap<String, usize> = HashMap::new();
+        for &bb in self.func_data.layout().bbs().keys() {
+            let bb_data = self.func_data.dfg().bb(bb);
+            let raw_name = if let Some(bb_name) = bb_data.name() {
+                bb_name.trim_start_matches('%').to_string()
+            } else {
+                "unknown".to_string()
+            };
+            let count = name_counts.entry(raw_name.clone()).or_insert(0);
+            let label = if *count == 0 {
+                format!("{}_{}", func_name, raw_name)
+            } else {
+                format!("{}_{}_{}", func_name, raw_name, count)
+            };
+            *count += 1;
+            self.bb_labels.insert(bb, label);
+        }
         // prologue
         self.generate_prologue()?;
         if !self.current_insts.is_empty() {
@@ -358,7 +381,6 @@ impl<'a> RiscvFuncBuilder<'a> {
     /// Generate asm code for a load operation
     fn generate_load(&mut self, inst: Value, load: &Load) -> Result<()> {
         self.load_to_reg(load.src(), Reg::T0)?;
-        // writeln!(self.writer, "\tlw t0, 0(t0)")?;
         self.push_inst(Inst::Lw(Reg::T0, Reg::T0, 0));
         self.store_from_reg(inst, Reg::T0)?;
         Ok(())
@@ -533,6 +555,7 @@ impl<'a> RiscvFuncBuilder<'a> {
                 self.push_inst(Inst::La(Reg::T2, name.to_string()));
                 self.push_inst(Inst::Sw(reg, Reg::T2, 0));
             }
+            return Ok(());
         }
         let loc = self.allocation[&val];
         match loc {
@@ -560,13 +583,7 @@ impl<'a> RiscvFuncBuilder<'a> {
 
     /// Get the label of a basic block
     fn get_bb_label(&self, bb: BasicBlock) -> String {
-        let bb_data = self.func_data.dfg().bb(bb);
-        if let Some(bb_name) = bb_data.name() {
-            let func_name = self.func_data.name().trim_start_matches('@');
-            format!("{}_{}", func_name, bb_name.trim_start_matches("%"))
-        } else {
-            "unknown".to_string()
-        }
+        self.bb_labels[&bb].clone()
     }
 
     /// Helper to push an instruction to current block

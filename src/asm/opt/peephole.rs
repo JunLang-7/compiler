@@ -40,8 +40,8 @@ fn try_optimize_window(history: &mut Vec<Inst>, current: &Inst) -> bool {
     // Optimization:
     //  if src == dst, delete lw
     //  Otherwise, replace lw with mv dst, src
-    if let Inst::Sw(dst, base1, off1) = last {
-        if let Inst::Lw(src, base2, off2) = current {
+    if let Inst::Sw(src, base1, off1) = last {
+        if let Inst::Lw(dst, base2, off2) = current {
             if base1 == base2 && off1 == off2 {
                 if src == dst {
                     return true; // drop current lw
@@ -74,17 +74,18 @@ fn try_optimize_window(history: &mut Vec<Inst>, current: &Inst) -> bool {
     //  mv rd2, rs2
     // Optimization:
     //  if rs1 == rd2
-    //    if rd1 == rs2, drop both mv
-    //    Otherwise, replace second mv with mv rs2, rs1
+    //    if rd1 == rs2, drop second mv (first mv A,B is still needed; second mv B,A is no-op)
+    //    Otherwise, replace second mv with mv rd2, rs1 (bypass rd1)
     if let Inst::Mv(rd1, rs1) = last {
         if let Inst::Mv(rd2, rs2) = current {
             if rd1 == rs2 {
                 let rs1_copy = *rs1;
                 let rd2_copy = *rd2;
                 if rs1_copy == rd2_copy {
-                    history.pop();
+                    // mv A, B; mv B, A => keep first, drop second
                 } else {
-                    history.pop();
+                    // mv A, B; mv C, A => keep first (A may be needed later),
+                    // replace second with mv C, B (bypass A)
                     history.push(Inst::Mv(rd2_copy, rs1_copy));
                 }
                 return true;
