@@ -1,10 +1,13 @@
 use const_prop::ConstantPropagation;
 use dce::DeadCodeElimination;
 use koopa::ir::Program;
+use mem2reg::Mem2Reg;
 use side_effect::analyze_side_effects;
 
 mod const_prop;
 mod dce;
+mod dom;
+mod mem2reg;
 mod side_effect;
 
 const MAX_OPT_PASSES: usize = 10;
@@ -20,6 +23,10 @@ pub fn optimize_program(program: &mut Program) {
         if func_data.layout().entry_bb().is_none() {
             continue;
         }
+
+        // Transform IR into SSA style
+        let mut m2r = Mem2Reg::new(func_data);
+        m2r.run();
 
         let mut changed = true;
         let mut pass_count = 0;

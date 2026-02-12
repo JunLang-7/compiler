@@ -105,7 +105,13 @@ impl<'a> DeadCodeElimination<'a> {
                 ValueKind::Return(ret) => ret.value().into_iter().collect(),
                 ValueKind::Load(load) => vec![load.src()],
                 ValueKind::Store(store) => vec![store.value(), store.dest()],
-                ValueKind::Branch(br) => vec![br.cond()],
+                ValueKind::Branch(br) => {
+                    let mut ops = vec![br.cond()];
+                    ops.extend(br.true_args());
+                    ops.extend(br.false_args());
+                    ops
+                }
+                ValueKind::Jump(jmp) => jmp.args().to_vec(),
                 ValueKind::Call(call) => call.args().to_vec(),
                 ValueKind::GetElemPtr(gep) => vec![gep.src(), gep.index()],
                 ValueKind::GetPtr(gp) => vec![gp.src(), gp.index()],
