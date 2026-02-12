@@ -1,11 +1,13 @@
 use const_prop::ConstantPropagation;
 use dce::DeadCodeElimination;
+use destruct_ssa::destruct_ssa;
 use koopa::ir::Program;
 use mem2reg::Mem2Reg;
 use side_effect::analyze_side_effects;
 
 mod const_prop;
 mod dce;
+mod destruct_ssa;
 mod dom;
 mod mem2reg;
 mod side_effect;
@@ -41,6 +43,9 @@ pub fn optimize_program(program: &mut Program) {
             // Dead code elimination pass
             let mut dce = DeadCodeElimination::new(func_data, &side_effects);
             changed |= dce.run();
+
+            // Convert SSA back to non-SSA form before codegen
+            destruct_ssa(func_data);
         }
     }
 }
