@@ -108,15 +108,19 @@ pub fn destruct_ssa(func: &mut FunctionData) {
                 let mut stores = Vec::new();
                 for (i, &arg) in args.iter().enumerate() {
                     let alloc = param_to_alloc[&target_params[i]];
-                    let store = func.dfg_mut().new_value().store(arg, alloc);
-                    stores.push(store);
+                    if !is_redundant_store_arg(func, arg, alloc) {
+                        let store = func.dfg_mut().new_value().store(arg, alloc);
+                        stores.push(store);
+                    }
                 }
 
-                // 从 layout 移除 terminator
-                func.layout_mut().bb_mut(bb).insts_mut().remove(&term);
+                if !stores.is_empty() {
+                    // 从 layout 移除 terminator
+                    func.layout_mut().bb_mut(bb).insts_mut().remove(&term);
 
-                // 插入 stores
-                func.layout_mut().bb_mut(bb).insts_mut().extend(stores);
+                    // 插入 stores
+                    func.layout_mut().bb_mut(bb).insts_mut().extend(stores);
+                }
 
                 // 用 raw() 清除 jump args（绕过 builder 断言）
                 let mut data = func.dfg().value(term).clone();
@@ -126,11 +130,20 @@ pub fn destruct_ssa(func: &mut FunctionData) {
                 func.dfg_mut().replace_value_with(term).raw(data);
 
                 // 重新插入 terminator
-                func.layout_mut()
-                    .bb_mut(bb)
-                    .insts_mut()
-                    .push_key_back(term)
-                    .unwrap();
+                if !func
+                    .layout()
+                    .bbs()
+                    .node(&bb)
+                    .unwrap()
+                    .insts()
+                    .contains_key(&term)
+                {
+                    func.layout_mut()
+                        .bb_mut(bb)
+                        .insts_mut()
+                        .push_key_back(term)
+                        .unwrap();
+                }
             }
             ValueKind::Branch(br) => {
                 let true_args = br.true_args().to_vec();
@@ -148,58 +161,80 @@ pub fn destruct_ssa(func: &mut FunctionData) {
 
                 let new_true_target = if !true_args.is_empty() {
                     let target_params = &bb_param_map[&true_bb_target];
-                    let split_bb = func
-                        .dfg_mut()
-                        .new_bb()
-                        .basic_block(Some("%_split_t".into()));
-                    func.layout_mut().bbs_mut().push_key_back(split_bb).unwrap();
-
+                    let mut stores = Vec::new();
                     for (i, &arg) in true_args.iter().enumerate() {
                         let alloc = param_to_alloc[&target_params[i]];
-                        let store = func.dfg_mut().new_value().store(arg, alloc);
+                        if !is_redundant_store_arg(func, arg, alloc) {
+                            let store = func.dfg_mut().new_value().store(arg, alloc);
+                            stores.push(store);
+                        }
+                    }
+
+                    if stores.is_empty() {
+                        true_bb_target
+                    } else {
+                        let split_bb = func
+                            .dfg_mut()
+                            .new_bb()
+                            .basic_block(Some("%_split_t".into()));
+                        func.layout_mut().bbs_mut().push_key_back(split_bb).unwrap();
+
+                        for store in stores {
+                            func.layout_mut()
+                                .bb_mut(split_bb)
+                                .insts_mut()
+                                .push_key_back(store)
+                                .unwrap();
+                        }
+                        let jmp = func.dfg_mut().new_value().jump(true_bb_target);
                         func.layout_mut()
                             .bb_mut(split_bb)
                             .insts_mut()
-                            .push_key_back(store)
+                            .push_key_back(jmp)
                             .unwrap();
-                    }
-                    let jmp = func.dfg_mut().new_value().jump(true_bb_target);
-                    func.layout_mut()
-                        .bb_mut(split_bb)
-                        .insts_mut()
-                        .push_key_back(jmp)
-                        .unwrap();
 
-                    split_bb
+                        split_bb
+                    }
                 } else {
                     true_bb_target
                 };
 
                 let new_false_target = if !false_args.is_empty() {
                     let target_params = &bb_param_map[&false_bb_target];
-                    let split_bb = func
-                        .dfg_mut()
-                        .new_bb()
-                        .basic_block(Some("%_split_f".into()));
-                    func.layout_mut().bbs_mut().push_key_back(split_bb).unwrap();
-
+                    let mut stores = Vec::new();
                     for (i, &arg) in false_args.iter().enumerate() {
                         let alloc = param_to_alloc[&target_params[i]];
-                        let store = func.dfg_mut().new_value().store(arg, alloc);
+                        if !is_redundant_store_arg(func, arg, alloc) {
+                            let store = func.dfg_mut().new_value().store(arg, alloc);
+                            stores.push(store);
+                        }
+                    }
+
+                    if stores.is_empty() {
+                        false_bb_target
+                    } else {
+                        let split_bb = func
+                            .dfg_mut()
+                            .new_bb()
+                            .basic_block(Some("%_split_f".into()));
+                        func.layout_mut().bbs_mut().push_key_back(split_bb).unwrap();
+
+                        for store in stores {
+                            func.layout_mut()
+                                .bb_mut(split_bb)
+                                .insts_mut()
+                                .push_key_back(store)
+                                .unwrap();
+                        }
+                        let jmp = func.dfg_mut().new_value().jump(false_bb_target);
                         func.layout_mut()
                             .bb_mut(split_bb)
                             .insts_mut()
-                            .push_key_back(store)
+                            .push_key_back(jmp)
                             .unwrap();
-                    }
-                    let jmp = func.dfg_mut().new_value().jump(false_bb_target);
-                    func.layout_mut()
-                        .bb_mut(split_bb)
-                        .insts_mut()
-                        .push_key_back(jmp)
-                        .unwrap();
 
-                    split_bb
+                        split_bb
+                    }
                 } else {
                     false_bb_target
                 };
@@ -216,6 +251,16 @@ pub fn destruct_ssa(func: &mut FunctionData) {
             }
             _ => {}
         }
+    }
+}
+
+fn is_redundant_store_arg(func: &FunctionData, arg: Value, alloc: Value) -> bool {
+    if !func.dfg().values().contains_key(&arg) {
+        return false;
+    }
+    match func.dfg().value(arg).kind() {
+        ValueKind::Load(load) => load.src() == alloc,
+        _ => false,
     }
 }
 

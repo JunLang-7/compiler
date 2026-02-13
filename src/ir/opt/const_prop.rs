@@ -3,7 +3,7 @@ use koopa::ir::{
     BasicBlock, BinaryOp, FunctionData, Value, ValueKind,
     builder::{LocalInstBuilder, ValueBuilder},
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LatticeVal {
@@ -18,6 +18,20 @@ pub struct ConstantPropagation<'a> {
     values: HashMap<Value, LatticeVal>,
     /// Mapping from values to their uses
     uses: HashMap<Value, Vec<Value>>,
+    /// Mapping from instructions to their parent basic blocks
+    inst_parent: HashMap<Value, BasicBlock>,
+    /// executable edges (SourceBB, TargetBB)
+    executable_edges: HashSet<(BasicBlock, BasicBlock)>,
+    /// predecessors of each basic block that are executable
+    executable_preds: HashMap<BasicBlock, Vec<BasicBlock>>,
+    /// reachable blocks in the control flow graph
+    executable_blocks: HashSet<BasicBlock>,
+    /// store the `Instruction` which has changed its state
+    ssa_worklist: VecDeque<Value>,
+    /// store the reachable edge of (SourceBB, TargetBB)
+    flow_worklist: VecDeque<(BasicBlock, BasicBlock)>,
+    /// pending flow edges to avoid duplicates
+    flow_pending: HashSet<(BasicBlock, BasicBlock)>,
 }
 
 impl<'a> ConstantPropagation<'a> {
@@ -27,6 +41,13 @@ impl<'a> ConstantPropagation<'a> {
             func,
             values: HashMap::new(),
             uses: HashMap::new(),
+            inst_parent: HashMap::new(),
+            executable_edges: HashSet::new(),
+            executable_preds: HashMap::new(),
+            executable_blocks: HashSet::new(),
+            ssa_worklist: VecDeque::new(),
+            flow_worklist: VecDeque::new(),
+            flow_pending: HashSet::new(),
         }
     }
 
@@ -40,20 +61,22 @@ impl<'a> ConstantPropagation<'a> {
 
     /// Build use-def chains for all values in the function
     fn build_use_def(&mut self) {
-        for (_, node) in self.func.layout().bbs() {
+        for (&bb, node) in self.func.layout().bbs() {
             for &inst in node.insts().keys() {
+                self.inst_parent.insert(inst, bb);
                 let val_data = self.func.dfg().value(inst);
                 let operands = match val_data.kind() {
                     ValueKind::Binary(bin) => vec![bin.lhs(), bin.rhs()],
                     ValueKind::Return(ret) => ret.value().into_iter().collect(),
                     ValueKind::Load(load) => vec![load.src()],
                     ValueKind::Store(store) => vec![store.value(), store.dest()],
-                    ValueKind::Branch(br) => {
-                        let mut ops = vec![br.cond()];
-                        ops.extend(br.true_args());
-                        ops.extend(br.false_args());
-                        ops
-                    }
+                    ValueKind::Branch(br) => br
+                        .true_args()
+                        .iter()
+                        .chain(br.false_args())
+                        .copied()
+                        .chain(std::iter::once(br.cond()))
+                        .collect(),
                     ValueKind::Jump(jmp) => jmp.args().to_vec(),
                     ValueKind::Call(call) => call.args().to_vec(),
                     ValueKind::GetElemPtr(gep) => vec![gep.src(), gep.index()],
@@ -69,8 +92,6 @@ impl<'a> ConstantPropagation<'a> {
 
     /// Initialize the lattice values for all values in the function
     fn init(&mut self) {
-        let mut worklist = VecDeque::new();
-
         // Initialize all values
         // we only care about values that are "Top" initially.
         // Constants are "Const". Params are "Bottom".
@@ -83,78 +104,38 @@ impl<'a> ConstantPropagation<'a> {
                 ValueKind::BlockArgRef(_) => LatticeVal::Top, // Phis & Block args
                 ValueKind::Undef(_) => LatticeVal::Top,
                 ValueKind::Binary(_) => LatticeVal::Top,
-                // Result of Load/Call/Alloc/GetPtr/GetElemPtr is unknown at compile time (pointer or memory)
-                ValueKind::Load(_)
-                | ValueKind::Call(_)
-                | ValueKind::Alloc(_)
-                | ValueKind::GlobalAlloc(_)
-                | ValueKind::GetElemPtr(_)
-                | ValueKind::GetPtr(_) => LatticeVal::Bottom,
                 // Instructions that don't produce values (Store, Branch, Jump, Return)
-                // effectively don't have a lattice value, treat them as Bottom to be safe.
-                _ => LatticeVal::Bottom,
+                // Treat as Top to wait for propagation
+                _ => LatticeVal::Top,
             };
-            self.values.insert(val, lat);
-
-            // Add Top values to worklist
-            if let ValueKind::Binary(_) = val_data.kind() {
-                worklist.push_back(val);
+            if lat != LatticeVal::Top {
+                self.values.insert(val, lat);
             }
         }
 
-        self.process_worklist(worklist);
+        if let Some(entry) = self.func.layout().entry_bb() {
+            self.mark_block_executable(entry);
+        }
     }
 
     /// Perform the constant propagation analysis
     fn propagate(&mut self) {
-        let bb_insts: Vec<Vec<Value>> = self
-            .func
-            .layout()
-            .bbs()
-            .nodes()
-            .map(|bb| bb.insts().keys().cloned().collect())
-            .collect();
-
-        let mut changed = true;
-        while changed {
-            changed = false;
-            let mut worklist = VecDeque::new();
-
-            // Simple local memory const propagation within each basic block.
-            for insts in &bb_insts {
-                let mut mem_consts: HashMap<Value, Option<i32>> = HashMap::new();
-                for &inst in insts {
-                    let val_data = self.func.dfg().value(inst);
-                    match val_data.kind() {
-                        ValueKind::Store(store) => {
-                            if let Some(alloc) = self.get_direct_alloc(store.dest()) {
-                                let val_lat = self.values.get(&store.value()).copied();
-                                let new_const = match val_lat {
-                                    Some(LatticeVal::Const(c)) => Some(c),
-                                    _ => None,
-                                };
-                                mem_consts.insert(alloc, new_const);
-                            }
-                        }
-                        ValueKind::Load(load) => {
-                            if let Some(alloc) = self.get_direct_alloc(load.src()) {
-                                if let Some(Some(c)) = mem_consts.get(&alloc) {
-                                    changed |= self.mark_load_const(inst, *c, &mut worklist);
-                                }
-                            }
-                        }
-                        ValueKind::Call(call) => {
-                            // Calls may modify memory through pointers; conservatively clear.
-                            if !call.args().is_empty() {
-                                mem_consts.clear();
-                            }
-                        }
-                        _ => {}
-                    }
+        while !self.ssa_worklist.is_empty() || !self.flow_worklist.is_empty() {
+            // First handle flow list
+            while let Some((from, to)) = self.flow_worklist.pop_front() {
+                self.flow_pending.remove(&(from, to));
+                // Mark target block executable and process its instructions if needed.
+                if !self.executable_blocks.contains(&to) {
+                    self.mark_block_executable(to);
                 }
+
+                // update block args of `to`
+                self.update_block_args(from, to);
             }
 
-            changed |= self.process_worklist(worklist);
+            while let Some(inst) = self.ssa_worklist.pop_front() {
+                self.visit_inst(inst);
+            }
         }
     }
 
@@ -177,13 +158,6 @@ impl<'a> ConstantPropagation<'a> {
         let mut replacements = HashMap::new();
 
         // Collect instructions to modify
-        let bb_insts: Vec<Value> = self
-            .func
-            .layout()
-            .bbs()
-            .nodes()
-            .flat_map(|bb| bb.insts().keys().cloned())
-            .collect();
         for (val, lat) in values_to_process {
             // Check operands and replace if they are Const
             if let LatticeVal::Const(c) = lat {
@@ -195,90 +169,31 @@ impl<'a> ConstantPropagation<'a> {
                         | ValueKind::Load(_)
                         | ValueKind::GetElemPtr(_)
                         | ValueKind::GetPtr(_)
+                        | ValueKind::BlockArgRef(_)
                 ) {
                     let const_val = self.get_or_create_const(&mut existing_inst, c);
                     replacements.insert(val, const_val);
                 }
             }
         }
-        // perform the replacements in the IR
-        for inst in bb_insts {
-            changed |= self.rewrite_inst_op(inst, &replacements, &mut existing_inst);
-        }
-        changed
-    }
-
-    /// Process the worklist of values that may have changed lattice values
-    /// and propagate changes to their users
-    fn process_worklist(&mut self, mut worklist: VecDeque<Value>) -> bool {
-        let mut changed = false;
-        enum PendingUpdate {
-            Jump {
-                target: BasicBlock,
-                args: Vec<Value>,
-            },
-            Branch {
-                true_bb: BasicBlock,
-                true_args: Vec<Value>,
-                false_bb: BasicBlock,
-                false_args: Vec<Value>,
-            },
-        }
-        while let Some(inst) = worklist.pop_front() {
-            let mut pending_update: Option<PendingUpdate> = None;
-            let val_data = self.func.dfg().value(inst);
-            // We now propagate for Binary, Jump & Branch instructions in this SCCP
-            match val_data.kind() {
-                ValueKind::Binary(bin) => {
-                    let lhs_lat = *self.values.get(&bin.lhs()).unwrap_or(&LatticeVal::Bottom);
-                    let rhs_lat = *self.values.get(&bin.rhs()).unwrap_or(&LatticeVal::Bottom);
-                    let old_lat = *self.values.get(&inst).unwrap_or(&LatticeVal::Bottom);
-                    let new_lat = self.eval_binary(bin.op(), lhs_lat, rhs_lat);
-
-                    if old_lat != new_lat {
-                        self.values.insert(inst, new_lat);
-                        changed = true;
-                        // Add users to worklist
-                        if let Some(users) = self.uses.get(&inst) {
-                            for &user in users {
-                                worklist.push_back(user);
-                            }
-                        }
-                    }
-                }
-                ValueKind::Jump(jmp) => {
-                    pending_update = Some(PendingUpdate::Jump {
-                        target: jmp.target(),
-                        args: jmp.args().to_vec(),
-                    });
-                }
-                ValueKind::Branch(br) => {
-                    pending_update = Some(PendingUpdate::Branch {
-                        true_bb: br.true_bb(),
-                        true_args: br.true_args().to_vec(),
-                        false_bb: br.false_bb(),
-                        false_args: br.false_args().to_vec(),
-                    });
-                }
-                _ => {}
-            }
-            if let Some(update) = pending_update {
-                match update {
-                    PendingUpdate::Jump { target, args } => {
-                        self.update_block_args(target, &args, &mut worklist, &mut changed);
-                    }
-                    PendingUpdate::Branch {
-                        true_bb,
-                        true_args,
-                        false_bb,
-                        false_args,
-                    } => {
-                        self.update_block_args(true_bb, &true_args, &mut worklist, &mut changed);
-                        self.update_block_args(false_bb, &false_args, &mut worklist, &mut changed);
-                    }
-                }
+        let executable_bbs: Vec<BasicBlock> = self.executable_blocks.iter().cloned().collect();
+        for bb in executable_bbs {
+            let insts: Vec<Value> = self
+                .func
+                .layout()
+                .bbs()
+                .node(&bb)
+                .unwrap()
+                .insts()
+                .keys()
+                .cloned()
+                .collect();
+            // perform the replacements in the IR
+            for inst in insts {
+                changed |= self.rewrite_inst_op(inst, &replacements, &mut existing_inst);
             }
         }
+
         changed
     }
 
@@ -512,38 +427,6 @@ impl<'a> ConstantPropagation<'a> {
         changed
     }
 
-    /// Helper to check if a value is a direct alloc (not through pointers)
-    fn get_direct_alloc(&self, val: Value) -> Option<Value> {
-        if !self.func.dfg().values().contains_key(&val) {
-            return None;
-        }
-        match self.func.dfg().value(val).kind() {
-            ValueKind::Alloc(_) => Some(val),
-            _ => None,
-        }
-    }
-
-    /// Mark a load instruction as having a constant value and update the worklist accordingly
-    fn mark_load_const(
-        &mut self,
-        load_inst: Value,
-        c: i32,
-        worklist: &mut VecDeque<Value>,
-    ) -> bool {
-        let old_lat = *self.values.get(&load_inst).unwrap_or(&LatticeVal::Bottom);
-        let new_lat = LatticeVal::Const(c);
-        if old_lat != new_lat {
-            self.values.insert(load_inst, new_lat);
-            if let Some(users) = self.uses.get(&load_inst) {
-                for &user in users {
-                    worklist.push_back(user);
-                }
-            }
-            return true;
-        }
-        false
-    }
-
     /// Helper to get an existing constant value or create a new one if it doesn't exist
     fn get_or_create_const(
         &mut self,
@@ -560,27 +443,38 @@ impl<'a> ConstantPropagation<'a> {
     }
 
     /// Update the block arguments of a target basic block based on the new argument values
-    fn update_block_args(
-        &mut self,
-        target_bb: BasicBlock,
-        args: &[Value],
-        worklist: &mut VecDeque<Value>,
-        changed: &mut bool,
-    ) {
-        let params = self.func.dfg().bb(target_bb).params().to_vec();
+    fn update_block_args(&mut self, _from: BasicBlock, to: BasicBlock) {
+        let params = self.func.dfg().bb(to).params().to_vec();
+        if params.is_empty() {
+            return;
+        }
+
+        let preds = match self.executable_preds.get(&to) {
+            Some(preds) => preds,
+            None => return,
+        };
+
         for (i, &param) in params.iter().enumerate() {
-            let arg_val = args[i];
-            let arg_lat = *self.values.get(&arg_val).unwrap_or(&LatticeVal::Bottom);
-            let param_old_lat = *self.values.get(&param).unwrap_or(&LatticeVal::Top);
-            let param_new_lat = self.meet(param_old_lat, arg_lat);
+            let mut new_lat = LatticeVal::Top;
+            let mut first = true;
+            for &pred in preds {
+                let arg_val = self.get_jump_arg(pred, to, i);
+                let arg_lat = self.get_val_lat(arg_val);
+                if first {
+                    new_lat = arg_lat;
+                    first = false;
+                } else {
+                    new_lat = self.meet(new_lat, arg_lat);
+                }
+            }
 
-            if param_new_lat != param_old_lat {
-                self.values.insert(param, param_new_lat);
-                *changed = true;
-
+            // Update state
+            let old_lat = self.get_val_lat(param);
+            if new_lat != old_lat {
+                self.values.insert(param, new_lat);
                 if let Some(users) = self.uses.get(&param) {
                     for &user in users {
-                        worklist.push_back(user);
+                        self.ssa_worklist.push_back(user);
                     }
                 }
             }
@@ -600,5 +494,140 @@ impl<'a> ConstantPropagation<'a> {
                 }
             }
         }
+    }
+
+    /// Makr block executable and add all instruction into SSA worklist
+    fn mark_block_executable(&mut self, bb: BasicBlock) {
+        if self.executable_blocks.contains(&bb) {
+            return;
+        }
+        self.executable_blocks.insert(bb);
+
+        for &inst in self.func.layout().bbs().node(&bb).unwrap().insts().keys() {
+            self.ssa_worklist.push_back(inst);
+        }
+    }
+
+    /// Mark edge executable and enqueue flow
+    fn mark_edge_executable(&mut self, from: BasicBlock, to: BasicBlock) {
+        if !self.executable_edges.contains(&(from, to)) {
+            self.executable_edges.insert((from, to));
+            self.executable_preds.entry(to).or_default().push(from);
+            self.enqueue_flow(from, to);
+        }
+    }
+
+    /// Enqueue a flow edge if not already pending
+    fn enqueue_flow(&mut self, from: BasicBlock, to: BasicBlock) {
+        if self.flow_pending.insert((from, to)) {
+            self.flow_worklist.push_back((from, to));
+        }
+    }
+
+    /// Get the argument value passed from `from` block to `to` block at index `arg_idx`
+    fn get_jump_arg(&self, from: BasicBlock, to: BasicBlock, arg_idx: usize) -> Value {
+        let term = self
+            .func
+            .layout()
+            .bbs()
+            .node(&from)
+            .unwrap()
+            .insts()
+            .back_key()
+            .expect("Basic block must end with terminator");
+        let term_data = self.func.dfg().value(*term);
+        match term_data.kind() {
+            ValueKind::Jump(jmp) => jmp.args()[arg_idx],
+            ValueKind::Branch(br) => {
+                if br.true_bb() == to {
+                    br.true_args()[arg_idx]
+                } else {
+                    br.false_args()[arg_idx]
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Visit an instruction and update its lattice value based on its operands
+    fn visit_inst(&mut self, inst: Value) {
+        let val_kind = self.func.dfg().value(inst).kind().clone();
+        let old_lat = self.get_val_lat(inst);
+
+        let new_lat = match val_kind {
+            ValueKind::Binary(bin) => {
+                let lhs = self.get_val_lat(bin.lhs());
+                let rhs = self.get_val_lat(bin.rhs());
+                self.eval_binary(bin.op(), lhs, rhs)
+            }
+            ValueKind::Branch(br) => {
+                let cond_lat = self.get_val_lat(br.cond());
+                let curr_bb = self.get_inst_parent(inst);
+                match cond_lat {
+                    LatticeVal::Const(c) => {
+                        if c != 0 {
+                            self.mark_edge_executable(curr_bb, br.true_bb());
+                            self.enqueue_flow(curr_bb, br.true_bb());
+                        } else {
+                            self.mark_edge_executable(curr_bb, br.false_bb());
+                            self.enqueue_flow(curr_bb, br.false_bb());
+                        }
+                    }
+                    // Overdefined condition: conservatively execute both edges.
+                    LatticeVal::Bottom => {
+                        self.mark_edge_executable(curr_bb, br.true_bb());
+                        self.mark_edge_executable(curr_bb, br.false_bb());
+                        self.enqueue_flow(curr_bb, br.true_bb());
+                        self.enqueue_flow(curr_bb, br.false_bb());
+                    }
+                    // Unknown condition: do not speculate edge executability.
+                    LatticeVal::Top => {}
+                }
+                return;
+            }
+            ValueKind::Jump(jmp) => {
+                let curr_bb = self.get_inst_parent(inst);
+                self.mark_edge_executable(curr_bb, jmp.target());
+                self.enqueue_flow(curr_bb, jmp.target());
+                return;
+            }
+            // 在 SSA 下，Load 应该已经被 Mem2Reg 消除了（除非是全局变量/数组）。
+            // 如果是数组 Load，通常视为 Bottom。
+            ValueKind::Load(_) | ValueKind::Call(_) => LatticeVal::Bottom,
+            // Store, Return 等不产生 Value (或 Unit)
+            _ => LatticeVal::Bottom,
+        };
+
+        if new_lat != old_lat {
+            self.values.insert(inst, new_lat);
+            if let Some(users) = self.uses.get(&inst) {
+                for &user in users {
+                    self.ssa_worklist.push_back(user);
+                }
+            }
+        }
+    }
+
+    /// Get the lattice value of a given value
+    fn get_val_lat(&self, val: Value) -> LatticeVal {
+        *self.values.get(&val).unwrap_or(&LatticeVal::Top)
+    }
+
+    /// Get the parent basic block of an instruction
+    fn get_inst_parent(&self, inst: Value) -> BasicBlock {
+        if let Some(&bb) = self.inst_parent.get(&inst) {
+            return bb;
+        }
+        self.get_inst_parent_slow(inst)
+    }
+
+    /// Slow path to find the parent basic block of an instruction
+    fn get_inst_parent_slow(&self, inst: Value) -> BasicBlock {
+        for (&bb, node) in self.func.layout().bbs() {
+            if node.insts().contains_key(&inst) {
+                return bb;
+            }
+        }
+        panic!("Instruction not found in any block");
     }
 }
