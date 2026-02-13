@@ -1,6 +1,6 @@
 /// A simple constant propagation pass for Koopa IR.
 use koopa::ir::{
-    BinaryOp, FunctionData, Value, ValueKind,
+    BasicBlock, BinaryOp, FunctionData, Value, ValueKind,
     builder::{LocalInstBuilder, ValueBuilder},
 };
 use std::collections::{HashMap, VecDeque};
@@ -48,7 +48,13 @@ impl<'a> ConstantPropagation<'a> {
                     ValueKind::Return(ret) => ret.value().into_iter().collect(),
                     ValueKind::Load(load) => vec![load.src()],
                     ValueKind::Store(store) => vec![store.value(), store.dest()],
-                    ValueKind::Branch(br) => vec![br.cond()],
+                    ValueKind::Branch(br) => {
+                        let mut ops = vec![br.cond()];
+                        ops.extend(br.true_args());
+                        ops.extend(br.false_args());
+                        ops
+                    }
+                    ValueKind::Jump(jmp) => jmp.args().to_vec(),
                     ValueKind::Call(call) => call.args().to_vec(),
                     ValueKind::GetElemPtr(gep) => vec![gep.src(), gep.index()],
                     ValueKind::GetPtr(gp) => vec![gp.src(), gp.index()],
@@ -74,7 +80,7 @@ impl<'a> ConstantPropagation<'a> {
             let lat = match val_data.kind() {
                 ValueKind::Integer(int) => LatticeVal::Const(int.value()),
                 ValueKind::FuncArgRef(_) => LatticeVal::Bottom,
-                ValueKind::BlockArgRef(_) => LatticeVal::Bottom, // Phis & Block args
+                ValueKind::BlockArgRef(_) => LatticeVal::Top, // Phis & Block args
                 ValueKind::Undef(_) => LatticeVal::Top,
                 ValueKind::Binary(_) => LatticeVal::Top,
                 // Result of Load/Call/Alloc/GetPtr/GetElemPtr is unknown at compile time (pointer or memory)
@@ -206,9 +212,22 @@ impl<'a> ConstantPropagation<'a> {
     /// and propagate changes to their users
     fn process_worklist(&mut self, mut worklist: VecDeque<Value>) -> bool {
         let mut changed = false;
+        enum PendingUpdate {
+            Jump {
+                target: BasicBlock,
+                args: Vec<Value>,
+            },
+            Branch {
+                true_bb: BasicBlock,
+                true_args: Vec<Value>,
+                false_bb: BasicBlock,
+                false_args: Vec<Value>,
+            },
+        }
         while let Some(inst) = worklist.pop_front() {
+            let mut pending_update: Option<PendingUpdate> = None;
             let val_data = self.func.dfg().value(inst);
-            // We only propagate for Binary instructions in this simple CP
+            // We now propagate for Binary, Jump & Branch instructions in this SCCP
             match val_data.kind() {
                 ValueKind::Binary(bin) => {
                     let lhs_lat = *self.values.get(&bin.lhs()).unwrap_or(&LatticeVal::Bottom);
@@ -227,7 +246,37 @@ impl<'a> ConstantPropagation<'a> {
                         }
                     }
                 }
+                ValueKind::Jump(jmp) => {
+                    pending_update = Some(PendingUpdate::Jump {
+                        target: jmp.target(),
+                        args: jmp.args().to_vec(),
+                    });
+                }
+                ValueKind::Branch(br) => {
+                    pending_update = Some(PendingUpdate::Branch {
+                        true_bb: br.true_bb(),
+                        true_args: br.true_args().to_vec(),
+                        false_bb: br.false_bb(),
+                        false_args: br.false_args().to_vec(),
+                    });
+                }
                 _ => {}
+            }
+            if let Some(update) = pending_update {
+                match update {
+                    PendingUpdate::Jump { target, args } => {
+                        self.update_block_args(target, &args, &mut worklist, &mut changed);
+                    }
+                    PendingUpdate::Branch {
+                        true_bb,
+                        true_args,
+                        false_bb,
+                        false_args,
+                    } => {
+                        self.update_block_args(true_bb, &true_args, &mut worklist, &mut changed);
+                        self.update_block_args(false_bb, &false_args, &mut worklist, &mut changed);
+                    }
+                }
             }
         }
         changed
@@ -507,6 +556,49 @@ impl<'a> ConstantPropagation<'a> {
             let v = self.func.dfg_mut().new_value().integer(value);
             existing_inst.insert(value, v);
             v
+        }
+    }
+
+    /// Update the block arguments of a target basic block based on the new argument values
+    fn update_block_args(
+        &mut self,
+        target_bb: BasicBlock,
+        args: &[Value],
+        worklist: &mut VecDeque<Value>,
+        changed: &mut bool,
+    ) {
+        let params = self.func.dfg().bb(target_bb).params().to_vec();
+        for (i, &param) in params.iter().enumerate() {
+            let arg_val = args[i];
+            let arg_lat = *self.values.get(&arg_val).unwrap_or(&LatticeVal::Bottom);
+            let param_old_lat = *self.values.get(&param).unwrap_or(&LatticeVal::Top);
+            let param_new_lat = self.meet(param_old_lat, arg_lat);
+
+            if param_new_lat != param_old_lat {
+                self.values.insert(param, param_new_lat);
+                *changed = true;
+
+                if let Some(users) = self.uses.get(&param) {
+                    for &user in users {
+                        worklist.push_back(user);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Meet operation for lattice values: combine two lattice values to get the new lattice value
+    fn meet(&self, v1: LatticeVal, v2: LatticeVal) -> LatticeVal {
+        match (v1, v2) {
+            (LatticeVal::Top, x) | (x, LatticeVal::Top) => x,
+            (LatticeVal::Bottom, _) | (_, LatticeVal::Bottom) => LatticeVal::Bottom,
+            (LatticeVal::Const(c1), LatticeVal::Const(c2)) => {
+                if c1 == c2 {
+                    LatticeVal::Const(c1)
+                } else {
+                    LatticeVal::Bottom
+                }
+            }
         }
     }
 }

@@ -43,9 +43,9 @@ pub fn optimize_program(program: &mut Program) {
             // Dead code elimination pass
             let mut dce = DeadCodeElimination::new(func_data, &side_effects);
             changed |= dce.run();
-
-            // Convert SSA back to non-SSA form before codegen
-            destruct_ssa(func_data);
         }
+        
+        // Convert SSA back to non-SSA form before codegen
+        destruct_ssa(func_data);
     }
 }
