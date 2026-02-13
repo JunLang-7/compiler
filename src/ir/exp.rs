@@ -331,16 +331,21 @@ pub fn generate_land_exp(ctx: &mut GenContext, bb: &mut BasicBlock, land_exp: &L
             let res_ptr = ctx.func_mut().dfg_mut().new_value().alloc(Type::get_i32());
             let zero = ctx.func_mut().dfg_mut().new_value().integer(0);
             let init_store = ctx.func_mut().dfg_mut().new_value().store(zero, res_ptr);
+            let lhs_ne0 =
+                ctx.func_mut()
+                    .dfg_mut()
+                    .new_value()
+                    .binary(BinaryOp::NotEq, lhs_val, zero);
             let br = ctx
                 .func_mut()
                 .dfg_mut()
                 .new_value()
-                .branch(lhs_val, true_bb, end_bb);
+                .branch(lhs_ne0, true_bb, end_bb);
             ctx.func_mut()
                 .layout_mut()
                 .bb_mut(*bb)
                 .insts_mut()
-                .extend([res_ptr, init_store, br]);
+                .extend([res_ptr, init_store, lhs_ne0, br]);
 
             // 处理true分支
             *bb = true_bb;
@@ -400,21 +405,26 @@ pub fn generate_lor_exp(ctx: &mut GenContext, bb: &mut BasicBlock, lor_exp: &LOr
             let res_ptr = ctx.func_mut().dfg_mut().new_value().alloc(Type::get_i32());
             let one = ctx.func_mut().dfg_mut().new_value().integer(1);
             let init_store = ctx.func_mut().dfg_mut().new_value().store(one, res_ptr);
+            let zero = ctx.func_mut().dfg_mut().new_value().integer(0);
+            let lhs_ne0 =
+                ctx.func_mut()
+                    .dfg_mut()
+                    .new_value()
+                    .binary(BinaryOp::NotEq, lhs_val, zero);
             let br = ctx
                 .func_mut()
                 .dfg_mut()
                 .new_value()
-                .branch(lhs_val, end_bb, false_bb);
+                .branch(lhs_ne0, end_bb, false_bb);
             ctx.func_mut()
                 .layout_mut()
                 .bb_mut(*bb)
                 .insts_mut()
-                .extend([res_ptr, init_store, br]);
+                .extend([res_ptr, init_store, lhs_ne0, br]);
 
             // 处理false分支
             *bb = false_bb;
             let rhs_val = generate_land_exp(ctx, bb, rhs);
-            let zero = ctx.func_mut().dfg_mut().new_value().integer(0);
             let rhs_ne0 =
                 ctx.func_mut()
                     .dfg_mut()
