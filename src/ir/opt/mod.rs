@@ -1,5 +1,6 @@
 use const_prop::ConstantPropagation;
 use dce::DeadCodeElimination;
+use gvn::GlobalValueNumbering;
 use koopa::ir::Program;
 use mem2reg::Mem2Reg;
 use side_effect::analyze_side_effects;
@@ -7,6 +8,7 @@ use side_effect::analyze_side_effects;
 mod const_prop;
 mod dce;
 mod dom;
+mod gvn;
 mod mem2reg;
 mod side_effect;
 
@@ -38,6 +40,9 @@ pub fn optimize_program(program: &mut Program) {
             // Constant propagation pass
             let mut const_prop = ConstantPropagation::new(func_data);
             changed |= const_prop.run();
+            // Global value numbering pass
+            let mut gvn = GlobalValueNumbering::new(func_data);
+            changed |= gvn.run();
             // Dead code elimination pass
             let mut dce = DeadCodeElimination::new(func_data, &side_effects);
             changed |= dce.run();
