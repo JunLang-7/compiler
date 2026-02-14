@@ -132,6 +132,19 @@ fn try_optimize_window(history: &mut Vec<Inst>, current: &Inst) -> bool {
                 }
             }
         }
+        Inst::Rem(rd, rs, reg) => {
+            // Check if last instruction is li reg, imm where imm is power of 2
+            if let Inst::Li(li_rd, imm) = last {
+                if li_rd == reg && *imm > 0 && (*imm & (*imm - 1)) == 0 {
+                    // imm is a power of 2, use bitwise and with imm-1
+                    let mask = *imm - 1;
+                    history.pop(); // remove original li
+                    history.push(Inst::Li(*reg, mask)); // load mask
+                    history.push(Inst::And(*rd, *rs, *reg)); // use and for remainder
+                    return true;
+                }
+            }
+        }
         _ => {}
     }
 
