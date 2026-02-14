@@ -169,11 +169,18 @@ impl DomInfo {
     fn compute_dom_frontier(&mut self, preds: &HashMap<BasicBlock, Vec<BasicBlock>>) {
         // DF(n) = { w | n dom pred(w) but n not strictly dom w }
         for (&bb, bb_preds) in preds {
+            // Unreachable blocks are not in idom; skip them.
+            let Some(&idom_bb) = self.idom.get(&bb) else {
+                continue;
+            };
+
             if bb_preds.len() >= 2 {
                 for &p in bb_preds {
+                    if !self.idom.contains_key(&p) {
+                        continue;
+                    }
                     let mut runner = p;
                     // runner climbs up to the idom(bb)
-                    let idom_bb = self.idom[&bb];
                     while runner != idom_bb {
                         self.dom_front.entry(runner).or_default().push(bb);
                         if let Some(&parent) = self.idom.get(&runner) {
