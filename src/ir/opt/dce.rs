@@ -1,5 +1,5 @@
-use super::side_effect::is_global_or_param;
 /// Dead Code Elimination Pass
+use super::side_effect::is_global_or_param;
 use koopa::ir::{BasicBlock, Function, FunctionData, Value, ValueKind};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -100,21 +100,78 @@ impl<'a> DeadCodeElimination<'a> {
     ) {
         while let Some(inst) = worklists.pop_front() {
             let val_data = self.func.dfg().value(inst);
+
             let operands = match val_data.kind() {
                 ValueKind::Binary(bin) => vec![bin.lhs(), bin.rhs()],
                 ValueKind::Return(ret) => ret.value().into_iter().collect(),
                 ValueKind::Load(load) => vec![load.src()],
                 ValueKind::Store(store) => vec![store.value(), store.dest()],
                 ValueKind::Branch(br) => {
-                    let mut ops = vec![br.cond()];
-                    ops.extend(br.true_args());
-                    ops.extend(br.false_args());
-                    ops
+                    // Only mark the condition; arguments are handled via BlockArgRef
+                    vec![br.cond()]
                 }
-                ValueKind::Jump(jmp) => jmp.args().to_vec(),
+                ValueKind::Jump(_) => {
+                    // Jump arguments are handled via BlockArgRef
+                    vec![]
+                }
                 ValueKind::Call(call) => call.args().to_vec(),
                 ValueKind::GetElemPtr(gep) => vec![gep.src(), gep.index()],
                 ValueKind::GetPtr(gp) => vec![gp.src(), gp.index()],
+                ValueKind::BlockArgRef(_) => {
+                    // BlockArg: when marked, we need to mark corresponding jump/branch args
+                    // Find which BB and which param index this BlockArg belongs to
+                    let mut bb_and_index = None;
+                    for (&bb, _) in self.func.layout().bbs() {
+                        let params = self.func.dfg().bb(bb).params();
+                        if let Some(idx) = params.iter().position(|&p| p == inst) {
+                            bb_and_index = Some((bb, idx));
+                            break;
+                        }
+                    }
+
+                    if let Some((target_bb, param_idx)) = bb_and_index {
+                        // Find all jumps/branches that target this BB and mark corresponding args
+                        for (_, node) in self.func.layout().bbs() {
+                            for &pred_inst in node.insts().keys() {
+                                let pred_data = self.func.dfg().value(pred_inst);
+                                let args_to_mark = match pred_data.kind() {
+                                    ValueKind::Jump(jmp) if jmp.target() == target_bb => {
+                                        if param_idx < jmp.args().len() {
+                                            vec![jmp.args()[param_idx]]
+                                        } else {
+                                            vec![]
+                                        }
+                                    }
+                                    ValueKind::Branch(br) => {
+                                        let mut args = Vec::new();
+                                        if br.true_bb() == target_bb
+                                            && param_idx < br.true_args().len()
+                                        {
+                                            args.push(br.true_args()[param_idx]);
+                                        }
+                                        if br.false_bb() == target_bb
+                                            && param_idx < br.false_args().len()
+                                        {
+                                            args.push(br.false_args()[param_idx]);
+                                        }
+                                        args
+                                    }
+                                    _ => vec![],
+                                };
+
+                                for arg in args_to_mark {
+                                    if self.func.dfg().values().contains_key(&arg)
+                                        && !marked.contains(&arg)
+                                    {
+                                        marked.insert(arg);
+                                        worklists.push_back(arg);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    vec![]
+                }
                 _ => vec![],
             };
             // For each operand of the instruction
@@ -149,9 +206,9 @@ impl<'a> DeadCodeElimination<'a> {
     fn sweep(&mut self, marked: &HashSet<Value>) -> bool {
         let mut changed = false;
         let mut insts_by_bb: HashMap<BasicBlock, Vec<Value>> = HashMap::new();
-        let mut dead_set: HashSet<Value> = HashSet::new();
+
+        // Collect all dead instructions
         for (&bb, node) in self.func.layout().bbs() {
-            // Collect instructions that are not marked
             let dead: Vec<Value> = node
                 .insts()
                 .keys()
@@ -159,23 +216,28 @@ impl<'a> DeadCodeElimination<'a> {
                 .cloned()
                 .collect();
             if !dead.is_empty() {
-                for inst in &dead {
-                    dead_set.insert(*inst);
-                }
                 insts_by_bb.insert(bb, dead);
             }
         }
 
-        // Remove dead instructions from function in a use-safe order
+        // Remove dead instructions in a use-safe order
+        // Only remove instructions when used_by is empty
         let mut removed: HashSet<Value> = HashSet::new();
         let mut progress = true;
-        while progress {
+        let mut iterations = 0;
+        let max_iterations = 1000; // Prevent infinite loops
+
+        while progress && iterations < max_iterations {
             progress = false;
+            iterations += 1;
+
             for (bb, insts) in insts_by_bb.iter() {
                 for &inst in insts {
                     if removed.contains(&inst) {
                         continue;
                     }
+
+                    // Only remove if no one is using this value
                     if self.func.dfg().value(inst).used_by().is_empty() {
                         self.func.layout_mut().bb_mut(*bb).insts_mut().remove(&inst);
                         self.func.dfg_mut().remove_value(inst);
@@ -186,6 +248,10 @@ impl<'a> DeadCodeElimination<'a> {
                 }
             }
         }
+
+        // Note: If we hit max_iterations, there may be cyclic dead code that we cannot remove
+        // This is acceptable - such code won't be executed and won't affect correctness
+
         changed
     }
 

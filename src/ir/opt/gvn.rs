@@ -1,8 +1,8 @@
 use super::dom::DomInfo;
 use koopa::ir::builder::ValueBuilder;
 use koopa::ir::{BasicBlock, BinaryOp, FunctionData, Value, ValueKind};
-use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 /// Expression for value numbering
@@ -99,9 +99,7 @@ impl<'a> GlobalValueNumbering<'a> {
             }
 
             // Create the phi expression and add to the value map
-            incoming.sort_by_key(|&(p, _)| {
-                self.bb_order.get(&p).cloned().unwrap_or(usize::MAX)
-            });
+            incoming.sort_by_key(|&(p, _)| self.bb_order.get(&p).cloned().unwrap_or(usize::MAX));
             let key = Expr::Phi(bb, incoming);
 
             if let Some(&existing) = self.value_map.get(&key) {
@@ -216,7 +214,13 @@ impl<'a> GlobalValueNumbering<'a> {
                 let mut lhs = self.get_latest_value(bin.lhs());
                 let mut rhs = self.get_latest_value(bin.rhs());
                 match bin.op() {
-                    BinaryOp::Add | BinaryOp::Mul | BinaryOp::And | BinaryOp::Or | BinaryOp::Xor | BinaryOp::Eq | BinaryOp::NotEq => {
+                    BinaryOp::Add
+                    | BinaryOp::Mul
+                    | BinaryOp::And
+                    | BinaryOp::Or
+                    | BinaryOp::Xor
+                    | BinaryOp::Eq
+                    | BinaryOp::NotEq => {
                         // Commutative operations: order the operands to canonicalize
                         if self.value_sort_key(lhs) > self.value_sort_key(rhs) {
                             std::mem::swap(&mut lhs, &mut rhs);
