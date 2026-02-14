@@ -39,7 +39,7 @@ impl LinearScan {
 
         for i in list.iter() {
             self.expire_old_intervals(i, &mut active, &mut free_regs);
-            let candidate = self.select_register(&free_regs, i);
+            let candidate = self.select_register(&free_regs, i, &allocation);
             if let Some(reg) = candidate {
                 free_regs.retain(|&r| r != reg);
                 let mut interval = i.clone();
@@ -99,8 +99,30 @@ impl LinearScan {
     }
 
     /// select a free register from pool of free registers
-    fn select_register(&self, free_regs: &[i32], i: &LiveInterval) -> Option<i32> {
-        // try reg hint first
+    fn select_register(
+        &self,
+        free_regs: &[i32],
+        i: &LiveInterval,
+        allocation: &HashMap<Value, Location>,
+    ) -> Option<i32> {
+        // Try coalesce hint first (for Phi elimination)
+        if let Some(coalesce_target) = i.coalesce_hint {
+            if let Some(&Location::Reg(hint_reg)) = allocation.get(&coalesce_target) {
+                // Must check if hint_reg is free
+                if free_regs.contains(&hint_reg) {
+                    // Check if hint_reg is compatible with this interval
+                    let is_caller_saved = self.caller_saved_regs.contains(&hint_reg);
+                    let valid = if i.cross_call { !is_caller_saved } else { true };
+
+                    if valid {
+                        // Great! We can use the coalesced register
+                        return Some(hint_reg);
+                    }
+                }
+            }
+        }
+
+        // try ABI reg hint (for function calls)
         if let Some(hint) = i.reg_hint {
             if free_regs.contains(&hint) {
                 let is_caller_saved = self.caller_saved_regs.contains(&hint);

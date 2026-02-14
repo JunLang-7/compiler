@@ -45,6 +45,7 @@ impl<'a> LivenessAnalysis<'a> {
                     reg: None,
                     cross_call: false,
                     reg_hint: None,
+                    coalesce_hint: None,
                 },
             );
         }
@@ -64,6 +65,7 @@ impl<'a> LivenessAnalysis<'a> {
                         reg: None,
                         cross_call: false,
                         reg_hint: None,
+                        coalesce_hint: None,
                     },
                 );
                 id += 2;
@@ -243,6 +245,7 @@ impl<'a> LivenessAnalysis<'a> {
                     reg: None,
                     cross_call: false,
                     reg_hint: None,
+                    coalesce_hint: None,
                 },
             );
         }
@@ -251,6 +254,23 @@ impl<'a> LivenessAnalysis<'a> {
         for &bb in bbs.iter().rev() {
             let node = bb_nodes.get(&bb).unwrap();
             let block_out = live_out.get(&bb).cloned().unwrap_or_default();
+
+            // Ensure all block params overlap at block entry to avoid sharing a reg.
+            let params = self.func.dfg().bb(bb).params();
+            if !params.is_empty() {
+                let mut max_id = 0;
+                for &param in params.iter() {
+                    if let Some(&id) = self.inst_ids.get(&param) {
+                        if id > max_id {
+                            max_id = id;
+                        }
+                    }
+                }
+                let entry_end = max_id + 1;
+                for &param in params.iter() {
+                    self.extend_interval(param, entry_end);
+                }
+            }
 
             let insts: Vec<_> = node.insts().keys().cloned().collect();
             if insts.is_empty() {
@@ -288,6 +308,7 @@ impl<'a> LivenessAnalysis<'a> {
 
     /// Compute register hints based on calling conventions
     fn compute_hints(&mut self) {
+        // ABI hints for function calls and returns
         for (&inst, _) in self.inst_ids.iter() {
             let val_data = self.func.dfg().value(inst);
 
@@ -316,6 +337,114 @@ impl<'a> LivenessAnalysis<'a> {
                 }
                 _ => {}
             }
+        }
+
+        // Coalesce hints for block arguments (Phi nodes elimination)
+        self.compute_coalesce_hints();
+    }
+
+    /// Compute coalesce hints for register coalescing optimization
+    /// When Jump target(arg) or Branch bb(arg), try to assign arg and param the same register
+    fn compute_coalesce_hints(&mut self) {
+        let bbs: Vec<_> = self
+            .func
+            .layout()
+            .bbs()
+            .iter()
+            .map(|(_bb, node)| node)
+            .collect();
+
+        for node in bbs {
+            if let Some(&terminator) = node.insts().keys().last() {
+                let term_data = self.func.dfg().value(terminator);
+
+                match term_data.kind() {
+                    ValueKind::Jump(jmp) => {
+                        let target_bb = jmp.target();
+                        let args = jmp.args();
+                        let params: Vec<_> = self
+                            .func
+                            .dfg()
+                            .bb(target_bb)
+                            .params()
+                            .iter()
+                            .copied()
+                            .collect();
+
+                        // Try to coalesce each arg-param pair
+                        for (arg, param) in args.iter().zip(params.iter()) {
+                            self.try_coalesce(*arg, *param);
+                        }
+                    }
+                    ValueKind::Branch(br) => {
+                        // Handle true branch
+                        let true_bb = br.true_bb();
+                        let true_args = br.true_args();
+                        let true_params: Vec<_> = self
+                            .func
+                            .dfg()
+                            .bb(true_bb)
+                            .params()
+                            .iter()
+                            .copied()
+                            .collect();
+
+                        for (arg, param) in true_args.iter().zip(true_params.iter()) {
+                            self.try_coalesce(*arg, *param);
+                        }
+
+                        // Handle false branch
+                        let false_bb = br.false_bb();
+                        let false_args = br.false_args();
+                        let false_params: Vec<_> = self
+                            .func
+                            .dfg()
+                            .bb(false_bb)
+                            .params()
+                            .iter()
+                            .copied()
+                            .collect();
+
+                        for (arg, param) in false_args.iter().zip(false_params.iter()) {
+                            self.try_coalesce(*arg, *param);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Try to coalesce two values if beneficial
+    /// Sets coalesce hints to encourage LSRA to assign the same register
+    fn try_coalesce(&mut self, arg: Value, param: Value) {
+        if !self.is_variable(arg) || !self.is_variable(param) {
+            return;
+        }
+
+        let arg_interval = match self.intervals.get(&arg) {
+            Some(interval) => interval.clone(),
+            None => return,
+        };
+        let param_interval = match self.intervals.get(&param) {
+            Some(interval) => interval.clone(),
+            None => return,
+        };
+
+        // Only coalesce when intervals do not overlap.
+        let no_overlap =
+            arg_interval.end <= param_interval.start || param_interval.end <= arg_interval.start;
+        if !no_overlap {
+            return;
+        }
+
+        // Set bidirectional coalesce hints
+        // LSRA will try to use these hints if possible (i.e., if no conflicts)
+        if let Some(interval) = self.intervals.get_mut(&arg) {
+            interval.coalesce_hint = Some(param);
+        }
+        if let Some(interval) = self.intervals.get_mut(&param) {
+            interval.coalesce_hint = Some(arg);
         }
     }
 

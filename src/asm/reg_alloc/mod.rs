@@ -14,6 +14,9 @@ pub struct LiveInterval {
     pub cross_call: bool,
     /// ABI-based register hint
     pub reg_hint: Option<i32>,
+    /// another Value that should ideally share the same register
+    /// Used for eliminating copies in block arguments (Phi nodes)
+    pub coalesce_hint: Option<Value>,
 }
 
 /// Location of a value after register allocation
