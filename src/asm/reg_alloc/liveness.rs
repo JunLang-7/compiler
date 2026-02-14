@@ -51,7 +51,23 @@ impl<'a> LivenessAnalysis<'a> {
         id += 2;
 
         // Handle instructions in basic blocks in layout order
-        for (_, node) in self.func.layout().bbs() {
+        for (&bb, node) in self.func.layout().bbs() {
+            // Handle BB params (SSA block arguments)
+            for &param in self.func.dfg().bb(bb).params() {
+                self.inst_ids.insert(param, id);
+                self.intervals.insert(
+                    param,
+                    LiveInterval {
+                        value: param,
+                        start: id,
+                        end: id + 1,
+                        reg: None,
+                        cross_call: false,
+                        reg_hint: None,
+                    },
+                );
+                id += 2;
+            }
             for &inst in node.insts().keys() {
                 self.inst_ids.insert(inst, id);
                 // Record call instructions
@@ -98,6 +114,10 @@ impl<'a> LivenessAnalysis<'a> {
             let mut live_uses = HashSet::new();
             let mut live_defs = HashSet::new();
 
+            for &param in self.func.dfg().bb(bb).params() {
+                live_defs.insert(param);
+            }
+
             let node = bb_nodes.get(&bb).unwrap();
             for &inst in node.insts().keys() {
                 let val_data = self.func.dfg().value(inst);
@@ -122,6 +142,17 @@ impl<'a> LivenessAnalysis<'a> {
                     }
                     ValueKind::Branch(br) => {
                         self.check_use(br.cond(), &mut live_uses, &live_defs);
+                        for &arg in br.true_args() {
+                            self.check_use(arg, &mut live_uses, &live_defs);
+                        }
+                        for &arg in br.false_args() {
+                            self.check_use(arg, &mut live_uses, &live_defs);
+                        }
+                    }
+                    ValueKind::Jump(jmp) => {
+                        for &arg in jmp.args() {
+                            self.check_use(arg, &mut live_uses, &live_defs);
+                        }
                     }
                     ValueKind::Call(call) => {
                         for &arg in call.args() {
@@ -362,6 +393,11 @@ impl<'a> LivenessAnalysis<'a> {
             }
             ValueKind::Branch(br) => {
                 ops.push(br.cond());
+                ops.extend(br.true_args());
+                ops.extend(br.false_args());
+            }
+            ValueKind::Jump(jmp) => {
+                ops.extend(jmp.args());
             }
             ValueKind::Call(call) => {
                 ops.extend(call.args());

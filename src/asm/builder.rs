@@ -9,6 +9,31 @@ use std::{
     io::Result,
 };
 
+/// Represents the source of a value for parallel move purposes
+#[derive(Clone)]
+enum CopySrc {
+    Loc(Location),
+    Imm(i32),
+    Global(String),
+}
+
+/// Key for tracking locations in parallel move resolution (registers and stack slots)
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum LocKey {
+    Reg(i32),
+    Stack(i32),
+}
+
+/// Represents a single move operation for parallel move resolution,
+/// including source/destination and their keys for cycle detection
+#[derive(Clone)]
+struct CopyMove {
+    dst: Location,
+    dst_key: LocKey,
+    src: CopySrc,
+    src_key: Option<LocKey>,
+}
+
 /// Asm generator for a single function
 pub struct RiscvFuncBuilder<'a> {
     program: &'a Program,
@@ -22,6 +47,8 @@ pub struct RiscvFuncBuilder<'a> {
     current_insts: Vec<Inst>,
     // BB -> unique label (handles Koopa's duplicate BB names)
     bb_labels: HashMap<BasicBlock, String>,
+    extra_blocks: Vec<RiscvBlock>,
+    edge_block_counter: u32,
 }
 
 impl<'a> RiscvFuncBuilder<'a> {
@@ -55,6 +82,7 @@ impl<'a> RiscvFuncBuilder<'a> {
             stack_size,
         };
         let current_insts = Vec::new();
+        let extra_blocks = Vec::new();
 
         Self {
             program,
@@ -66,6 +94,8 @@ impl<'a> RiscvFuncBuilder<'a> {
             riscv_func,
             current_insts,
             bb_labels: HashMap::new(),
+            extra_blocks,
+            edge_block_counter: 0,
         }
     }
 
@@ -125,6 +155,10 @@ impl<'a> RiscvFuncBuilder<'a> {
             let insts = std::mem::take(&mut self.current_insts);
             self.riscv_func.blocks.push(RiscvBlock { label, insts });
         }
+        // trailing edge blocks for branches/jumps with args
+        self.riscv_func
+            .blocks
+            .extend(std::mem::take(&mut self.extra_blocks));
         Ok(self.riscv_func)
     }
 
@@ -397,16 +431,45 @@ impl<'a> RiscvFuncBuilder<'a> {
     /// Generate asm code for a branch operation
     fn generate_branch(&mut self, branch: &Branch) -> Result<()> {
         self.load_to_reg(branch.cond(), Reg::T0)?;
-        let true_label = self.get_bb_label(branch.true_bb());
-        let false_label = self.get_bb_label(branch.false_bb());
-        self.push_inst(Inst::Bnez(Reg::T0, true_label));
-        self.push_inst(Inst::J(false_label));
+        let true_bb = branch.true_bb();
+        let false_bb = branch.false_bb();
+        let true_args = branch.true_args().to_vec();
+        let false_args = branch.false_args().to_vec();
+
+        let true_label = self.get_bb_label(true_bb);
+        let false_label = self.get_bb_label(false_bb);
+
+        let true_target_label = if true_args.is_empty() {
+            true_label.clone()
+        } else {
+            let edge_label = self.new_edge_label("br_t");
+            let edge_block = self.build_edge_block(edge_label.clone(), true_bb, true_args)?;
+            self.extra_blocks.push(edge_block);
+            edge_label
+        };
+
+        let false_target_label = if false_args.is_empty() {
+            false_label.clone()
+        } else {
+            let edge_label = self.new_edge_label("br_f");
+            let edge_block = self.build_edge_block(edge_label.clone(), false_bb, false_args)?;
+            self.extra_blocks.push(edge_block);
+            edge_label
+        };
+
+        self.push_inst(Inst::Bnez(Reg::T0, true_target_label));
+        self.push_inst(Inst::J(false_target_label));
         Ok(())
     }
 
     /// Generate asm code for a jump operation
     fn generate_jump(&mut self, jmp: &Jump) -> Result<()> {
-        let label = self.get_bb_label(jmp.target());
+        let target = jmp.target();
+        let args = jmp.args().to_vec();
+        if !args.is_empty() {
+            self.emit_block_arg_moves(target, &args)?;
+        }
+        let label = self.get_bb_label(target);
         self.push_inst(Inst::J(label));
         Ok(())
     }
@@ -589,6 +652,221 @@ impl<'a> RiscvFuncBuilder<'a> {
     /// Helper to push an instruction to current block
     fn push_inst(&mut self, inst: Inst) {
         self.current_insts.push(inst);
+    }
+
+    /// Generate a unique edge block label
+    fn new_edge_label(&mut self, prefix: &str) -> String {
+        let id = self.edge_block_counter;
+        self.edge_block_counter += 1;
+        format!("{}_{}_{}", self.riscv_func.name, prefix, id)
+    }
+
+    /// Build an edge block for branches/jumps with arguments
+    fn build_edge_block(
+        &mut self,
+        label: String,
+        target_bb: BasicBlock,
+        args: Vec<Value>,
+    ) -> Result<RiscvBlock> {
+        let mut saved = Vec::new();
+        // Save current insts and start fresh for edge block
+        std::mem::swap(&mut saved, &mut self.current_insts);
+        self.current_insts.clear();
+
+        self.emit_block_arg_moves(target_bb, &args)?;
+        let target_label = self.get_bb_label(target_bb);
+        self.push_inst(Inst::J(target_label));
+
+        let mut insts = Vec::new();
+        // Restore original insts for caller block
+        std::mem::swap(&mut insts, &mut self.current_insts);
+        std::mem::swap(&mut saved, &mut self.current_insts);
+        Ok(RiscvBlock { label, insts })
+    }
+
+    /// Emit moves to set up block arguments before a branch/jump
+    fn emit_block_arg_moves(&mut self, target_bb: BasicBlock, args: &[Value]) -> Result<()> {
+        let params = self.func_data.dfg().bb(target_bb).params();
+        if params.len() != args.len() {
+            panic!("Mismatched block arg count");
+        }
+
+        let mut moves = Vec::new();
+        for (&param, &arg) in params.iter().zip(args.iter()) {
+            // dst must be a register or stack slot allocated for the block param
+            let Some(&dst) = self.allocation.get(&param) else {
+                panic!("Missing allocation for block param");
+            };
+            let dst_key = Self::loc_key(dst);
+            let src = self.copy_src_of_value(arg);
+            let src_key = match &src {
+                CopySrc::Loc(loc) => Some(Self::loc_key(*loc)),
+                _ => None,
+            };
+            // avoid redundant moves (src and dst are same reg/slot)
+            if src_key == Some(dst_key) {
+                continue;
+            }
+            moves.push(CopyMove {
+                dst,
+                dst_key,
+                src,
+                src_key,
+            });
+        }
+
+        self.emit_parallel_moves(moves)
+    }
+
+    /// Emit moves for a set of parallel copies, handling cycles
+    fn emit_parallel_moves(&mut self, mut moves: Vec<CopyMove>) -> Result<()> {
+        while !moves.is_empty() {
+            let mut src_keys = HashSet::new();
+            for m in moves.iter() {
+                if let Some(k) = m.src_key {
+                    src_keys.insert(k);
+                }
+            }
+
+            // cycle-free: exists a move whose dst is not src of any other move
+            if let Some(idx) = moves.iter().position(|m| !src_keys.contains(&m.dst_key)) {
+                let m = moves.remove(idx);
+                self.emit_single_move(&m, Reg::T1)?;
+                continue;
+            }
+
+            // read first to `t0`
+            let first = moves.remove(0);
+            let Some(mut hole) = first.src_key else {
+                self.emit_single_move(&first, Reg::T1)?;
+                continue;
+            };
+            self.read_copy_src_into(&first.src, Reg::T0)?;
+
+            // `hole` is now the "empty slot" we need to fill,
+            // starting with dst of `first`
+            let dst0_key = first.dst_key;
+            let dst0 = first.dst;
+
+            // cycle: follow the chain until we get back to dst0
+            while hole != dst0_key {
+                let idx = moves
+                    .iter()
+                    .position(|m| m.dst_key == hole)
+                    .expect("Broken parallel move cycle");
+                let m = moves.remove(idx);
+                self.emit_single_move(&m, Reg::T1)?;
+                hole = m.src_key.expect("Broken parallel move cycle");
+            }
+
+            self.write_reg_to_loc(Reg::T0, dst0)?;
+        }
+        Ok(())
+    }
+
+    /// Emit a single move operation, handling different source/destination types
+    fn emit_single_move(&mut self, m: &CopyMove, tmp: Reg) -> Result<()> {
+        match (&m.src, m.dst) {
+            (CopySrc::Loc(Location::Reg(rs)), Location::Reg(rd)) => {
+                let rs = Reg::from_index(*rs);
+                let rd = Reg::from_index(rd);
+                if rs != rd {
+                    self.push_inst(Inst::Mv(rd, rs));
+                }
+                Ok(())
+            }
+            (CopySrc::Loc(Location::Reg(rs)), Location::Stack(off)) => {
+                self.safe_sw(Reg::from_index(*rs), off)
+            }
+            (CopySrc::Loc(Location::Stack(off)), Location::Reg(rd)) => {
+                self.safe_lw(Reg::from_index(rd), *off)
+            }
+            (CopySrc::Loc(Location::Stack(src_off)), Location::Stack(dst_off)) => {
+                self.safe_lw(tmp, *src_off)?;
+                self.safe_sw(tmp, dst_off)
+            }
+            (CopySrc::Imm(v), Location::Reg(rd)) => {
+                self.push_inst(Inst::Li(Reg::from_index(rd), *v));
+                Ok(())
+            }
+            (CopySrc::Global(name), Location::Reg(rd)) => {
+                self.push_inst(Inst::La(Reg::from_index(rd), name.clone()));
+                Ok(())
+            }
+            (CopySrc::Imm(_), Location::Stack(_)) | (CopySrc::Global(_), Location::Stack(_)) => {
+                self.read_copy_src_into(&m.src, tmp)?;
+                self.write_reg_to_loc(tmp, m.dst)
+            }
+        }
+    }
+
+    /// Read a CopySrc into a register, handling different source types
+    fn read_copy_src_into(&mut self, src: &CopySrc, rd: Reg) -> Result<()> {
+        match src {
+            CopySrc::Loc(Location::Reg(r)) => {
+                let rs = Reg::from_index(*r);
+                if rs != rd {
+                    self.push_inst(Inst::Mv(rd, rs));
+                }
+                Ok(())
+            }
+            CopySrc::Loc(Location::Stack(offset)) => self.safe_lw(rd, *offset),
+            CopySrc::Imm(v) => {
+                self.push_inst(Inst::Li(rd, *v));
+                Ok(())
+            }
+            CopySrc::Global(name) => {
+                self.push_inst(Inst::La(rd, name.clone()));
+                Ok(())
+            }
+        }
+    }
+
+    /// Write a register value to a location, handling different destination types
+    fn write_reg_to_loc(&mut self, rs: Reg, dst: Location) -> Result<()> {
+        match dst {
+            Location::Reg(r) => {
+                let rd = Reg::from_index(r);
+                if rd != rs {
+                    self.push_inst(Inst::Mv(rd, rs));
+                }
+                Ok(())
+            }
+            Location::Stack(offset) => self.safe_sw(rs, offset),
+        }
+    }
+
+    /// Get the `CopySrc` of the given `val`
+    fn copy_src_of_value(&self, val: Value) -> CopySrc {
+        if let Some(loc) = self.allocation.get(&val) {
+            return CopySrc::Loc(*loc);
+        }
+        if let Some(value_data) = self.func_data.dfg().values().get(&val) {
+            if let ValueKind::Integer(i) = value_data.kind() {
+                return CopySrc::Imm(i.value());
+            }
+        }
+        let global_data = self.program.borrow_value(val);
+        match global_data.kind() {
+            ValueKind::GlobalAlloc(_) => {
+                let name = global_data
+                    .name()
+                    .as_deref()
+                    .unwrap()
+                    .trim_start_matches('@')
+                    .to_string();
+                CopySrc::Global(name)
+            }
+            _ => panic!("Unknown value source {:?} {:?}", val, global_data.kind()),
+        }
+    }
+
+    /// Convert a Location to a LocKey for parallel move tracking
+    fn loc_key(loc: Location) -> LocKey {
+        match loc {
+            Location::Reg(r) => LocKey::Reg(r),
+            Location::Stack(o) => LocKey::Stack(o),
+        }
     }
 
     /// Safely load a value from stack into register with offset checking
