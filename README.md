@@ -52,6 +52,10 @@ Linear Scan Register Allocation
   - 支持 caller-saved 寄存器（t3-t6）作为补充
 - **溢出处理**：当寄存器不足时自动将变量溢出到栈上。
 - **ABI 约束**：遵循 RISC-V 调用约定，对参数和返回值寄存器增加偏好。
+- **寄存器合并（Register Coalescing）**：
+    - 针对块参数（Phi/Block Args）建立合并提示，在满足活跃区间不重叠时优先分配同一物理寄存器。
+    - 避免多参数在同一块入口被错误合并，确保块参数区间在入口处重叠以防止覆盖。
+    - 与并行移动结合，能将大量隐式 Move 消除为零成本。
 
 ### 死代码消除（DCE）
 Dead Code Elimination
@@ -64,6 +68,8 @@ Dead Code Elimination
   - 消除无副作用且结果未使用的函数调用
 - **Store 优化**：消除从未被读取的局部变量存储。
 - **递归传播**：通过数据流分析标记所有必要的指令。
+- **块参数传播**：当 BlockArg 被标记时，反向标记所有前驱 Jump/Branch 的对应实参，避免丢失必要的值依赖。
+- **安全删除**：仅在 `used_by` 为空时移除指令，并设置迭代上限防止死循环。
 
 ### 窥孔优化（Peephole Optimization）
 
@@ -78,6 +84,7 @@ Dead Code Elimination
 **强度削减**（Strength Reduction）：
 - **乘法优化**：当乘数为 2 的幂次时，将 `mul` 转换为 `slli`（左移）
 - **除法优化**：当除数为 2 的幂次时，将 `div` 转换为 `sra`（算术右移）
+- **取模优化**：当取模数为 2 的幂次时，将 `rem` 转换为 `and` (r-1) （位与）
 
 **控制流化简**（Control Flow Simplification）:
 - **跳转线程化**：将连续的跳转链（如 A->B->C）合并为直接跳转（A->C），减少分支跳转开销。
