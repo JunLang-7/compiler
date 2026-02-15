@@ -8,7 +8,6 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone)]
 pub struct LoopInfo {
     /// The header block of the loop, which dominates all blocks in the loop and is the target of back edges
-    #[allow(unused)]
     pub header: BasicBlock,
     /// Preheader is the block that leads into the loop header,
     /// used for placing loop-invariant code
@@ -17,7 +16,6 @@ pub struct LoopInfo {
     pub blocks: HashSet<BasicBlock>,
     /// Latches are blocks that jump back to the loop header,
     /// used for identifying loop back edges
-    #[allow(unused)]
     pub latches: HashSet<BasicBlock>,
 }
 
