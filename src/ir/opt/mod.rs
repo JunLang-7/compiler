@@ -1,21 +1,21 @@
 use const_prop::ConstantPropagation;
 use dce::DeadCodeElimination;
 use gvn::GlobalValueNumbering;
+use ivo::InductionVariableOptimizer;
 use koopa::ir::Program;
 use licm::LoopInvariantCodeMotion;
 use mem2reg::Mem2Reg;
 use side_effect::analyze_side_effects;
-use strength::StrengthReduction;
 
 mod const_prop;
 mod dce;
 mod dom;
 mod gvn;
+mod ivo;
 mod licm;
 mod loop_analysis;
 mod mem2reg;
 mod side_effect;
-mod strength;
 
 const MAX_OPT_PASSES: usize = 10;
 
@@ -54,9 +54,9 @@ pub fn optimize_program(program: &mut Program) {
             // Loop invariant code motion pass
             let mut licm = LoopInvariantCodeMotion::new(func_data);
             changed |= licm.run();
-            // Strength reduction pass
-            let mut sr = StrengthReduction::new(func_data);
-            changed |= sr.run();
+            // Induction variable optimization pass
+            let mut ivo = InductionVariableOptimizer::new(func_data);
+            changed |= ivo.run();
         }
     }
 }

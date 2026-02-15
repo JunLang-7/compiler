@@ -1,12 +1,12 @@
-/// Strength reduction optimization pass for loops in the intermediate representation (IR).
-/// This pass identifies basic induction variables (BIVs) in loops and replaces expensive operations (e.g., multiplication) with cheaper ones (e.g., addition) based on the loop's induction variable patterns.
+/// Induction Variable Optimization (IVO) pass for loops in the intermediate representation (IR).
+/// This pass identifies basic induction variables (BIVs) in loops and applies strength reduction to replace expensive operations with cheaper ones, and eliminates induction variables when possible.
 use super::dom::DomInfo;
 use super::loop_analysis::{LoopAnalysis, LoopInfo};
 use koopa::ir::{
     BasicBlock, BinaryOp, FunctionData, Type, Value, ValueKind,
     builder::{BasicBlockBuilder, LocalInstBuilder, ValueBuilder},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Basic Induction Variable (BIV) for strength reduction
 struct BIV {
@@ -23,15 +23,15 @@ struct DIV {
     multiplier: i32,
 }
 
-/// StrengthReduction performs strength reduction optimization on loops,
-/// identifying basic induction variables and replacing expensive operations with cheaper ones.
-pub struct StrengthReduction<'a> {
+/// InductionVariableOptimizer performs induction variable optimization on loops,
+/// identifying basic induction variables and replacing expensive operations with cheaper ones and eliminating induction variables when possible.
+pub struct InductionVariableOptimizer<'a> {
     func: &'a mut FunctionData,
     dom: DomInfo,
 }
 
-impl<'a> StrengthReduction<'a> {
-    /// Create a new StrengthReduction optimizer for the given function and its dominator information
+impl<'a> InductionVariableOptimizer<'a> {
+    /// Create a new InductionVariableOptimizer for the given function and its dominator information
     pub fn new(func: &'a mut FunctionData) -> Self {
         let dom = DomInfo::new(func);
         Self { func, dom }
@@ -101,6 +101,8 @@ impl<'a> StrengthReduction<'a> {
         }
 
         let mut changed = false;
+        let mut test_replaced_for_bivs = HashSet::new();
+
         // Step 3: Perform strength reduction on the identified DIV instructions
         for div in divs {
             let biv = bivs
@@ -141,6 +143,16 @@ impl<'a> StrengthReduction<'a> {
                 let mut data = self.func.dfg().value(user).clone();
                 Self::subst_value_in_kind(data.kind_mut(), div.inst, new_param);
                 self.func.dfg_mut().replace_value_with(user).raw(data);
+            }
+
+            // Step 4: Try to replace the loop condition test if it involves the BIV with a test on the new parameter, which is the Induction Variable Elimination (IVE)
+            if !test_replaced_for_bivs.contains(&biv.param_idx) {
+                let replaced =
+                    self.replace_linear_test(header, preheader, biv, k, new_param, loop_info);
+                if replaced {
+                    test_replaced_for_bivs.insert(biv.param_idx);
+                    self.try_eliminate_biv(header, latch, biv);
+                }
             }
 
             changed = true;
@@ -257,6 +269,197 @@ impl<'a> StrengthReduction<'a> {
             }
         }
         None
+    }
+
+    /// Try linear test replacement for the loop condition if it involves the BIV,
+    /// replacing it with a test on the new parameter after strength reduction.
+    /// It's the Induction Variable Elimination (IVE).
+    fn replace_linear_test(
+        &mut self,
+        header: BasicBlock,
+        preheader: BasicBlock,
+        biv: &BIV,
+        multiplier: i32,
+        new_param: Value,
+        loop_info: &LoopInfo,
+    ) -> bool {
+        if multiplier <= 0 {
+            return false; // Only handle positive multipliers for now
+        }
+
+        let term = *self
+            .func
+            .layout()
+            .bbs()
+            .node(&header)
+            .unwrap()
+            .insts()
+            .back_key()
+            .expect("Loop header must end with a terminator");
+        let term_data = self.func.dfg().value(term).clone();
+
+        if let ValueKind::Branch(br) = term_data.kind() {
+            let cond = br.cond();
+            let cond_data = self.func.dfg().value(cond).clone();
+
+            if let ValueKind::Binary(bin) = cond_data.kind() {
+                let (lhs, rhs) = (bin.lhs(), bin.rhs());
+                // Check if the condition involves the BIV
+                let (is_lhs_biv, limit_val) = if lhs == biv.param_val {
+                    (true, rhs)
+                } else if rhs == biv.param_val {
+                    (false, lhs)
+                } else {
+                    return false; // Condition does not involve the BIV
+                };
+
+                // Check if the limit value is loop-invariant
+                if !self.is_loop_invariant(limit_val, loop_info) {
+                    return false; // Limit value must be loop-invariant for the transformation to be valid
+                }
+
+                // Start Replacing
+                // new_limit = limit_val * multiplier
+                let new_limit =
+                    self.insert_math_inst(preheader, limit_val, multiplier, BinaryOp::Mul);
+
+                let new_lhs = if is_lhs_biv { new_param } else { new_limit };
+                let new_rhs = if is_lhs_biv { new_limit } else { new_param };
+                // Replace the condition with the new test
+                self.func
+                    .dfg_mut()
+                    .replace_value_with(cond)
+                    .binary(bin.op(), new_lhs, new_rhs);
+
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Try to remove an unused BIV parameter and its corresponding jump args.
+    fn try_eliminate_biv(&mut self, header: BasicBlock, latch: BasicBlock, biv: &BIV) -> bool {
+        let next_val = self.get_jump_arg(latch, header, biv.param_idx);
+        let users: Vec<Value> = self
+            .func
+            .dfg()
+            .value(biv.param_val)
+            .used_by()
+            .iter()
+            .cloned()
+            .collect();
+        for user in users {
+            if user == next_val {
+                continue;
+            }
+            let user_data = self.func.dfg().value(user);
+            let dead_user = user_data.used_by().is_empty()
+                && matches!(
+                    user_data.kind(),
+                    ValueKind::Binary(_) | ValueKind::GetPtr(_) | ValueKind::GetElemPtr(_)
+                );
+            if !dead_user {
+                return false;
+            }
+        }
+
+        if !self.remove_param_from_header(header, biv.param_idx) {
+            return false;
+        }
+        self.remove_arg_from_all_preds(header, biv.param_idx);
+        true
+    }
+
+    /// Remove the parameter at the specified index from the loop header and update all related BlockArgRef indices accordingly.
+    fn remove_param_from_header(&mut self, header: BasicBlock, idx: usize) -> bool {
+        let mut params = self.func.dfg().bb(header).params().to_vec();
+        if idx >= params.len() {
+            return false;
+        }
+        params.remove(idx);
+        let params_mut = self.func.dfg_mut().bb_mut(header).params_mut();
+        params_mut.clear();
+        params_mut.extend(params.iter().cloned());
+
+        for (new_idx, &param) in params.iter().enumerate() {
+            let mut data = self.func.dfg().value(param).clone();
+            if let ValueKind::BlockArgRef(arg) = data.kind_mut() {
+                *arg.index_mut() = new_idx;
+            }
+            self.func.dfg_mut().replace_value_with(param).raw(data);
+        }
+        true
+    }
+
+    /// Remove the argument at the specified index from all predecessor blocks' terminators that jump to the target block, and update the terminators accordingly.
+    fn remove_arg_from_all_preds(&mut self, target: BasicBlock, idx: usize) {
+        let bbs: Vec<BasicBlock> = self.func.layout().bbs().keys().cloned().collect();
+        for bb in bbs {
+            self.remove_arg_from_terminator(bb, target, idx);
+        }
+    }
+
+    /// Remove the argument at the specified index from the terminator instruction in the `from` block that jumps to the `to` block, and update the terminator accordingly.
+    fn remove_arg_from_terminator(&mut self, from: BasicBlock, to: BasicBlock, idx: usize) {
+        let term = self
+            .func
+            .layout()
+            .bbs()
+            .node(&from)
+            .and_then(|node| node.insts().back_key())
+            .cloned();
+        let Some(term) = term else {
+            return;
+        };
+        let term_data = self.func.dfg().value(term).clone();
+
+        match term_data.kind() {
+            ValueKind::Jump(jmp) => {
+                if jmp.target() != to {
+                    return;
+                }
+                let mut args = jmp.args().to_vec();
+                if idx >= args.len() {
+                    return;
+                }
+                args.remove(idx);
+                self.func
+                    .dfg_mut()
+                    .replace_value_with(term)
+                    .jump_with_args(to, args);
+            }
+            ValueKind::Branch(br) => {
+                let cond = br.cond();
+                let true_bb = br.true_bb();
+                let false_bb = br.false_bb();
+                let mut t_args = br.true_args().to_vec();
+                let mut f_args = br.false_args().to_vec();
+                let mut changed = false;
+                if true_bb == to && idx < t_args.len() {
+                    t_args.remove(idx);
+                    changed = true;
+                }
+                if false_bb == to && idx < f_args.len() {
+                    f_args.remove(idx);
+                    changed = true;
+                }
+                if !changed {
+                    return;
+                }
+                if true_bb == false_bb {
+                    self.func
+                        .dfg_mut()
+                        .replace_value_with(term)
+                        .jump_with_args(true_bb, t_args);
+                } else {
+                    self.func
+                        .dfg_mut()
+                        .replace_value_with(term)
+                        .branch_with_args(cond, true_bb, false_bb, t_args, f_args);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Analyze the next value of a potential BIV to determine if it follows the induction variable pattern (e.g., param + step)
@@ -392,6 +595,28 @@ impl<'a> StrengthReduction<'a> {
             .insert_key_before(math_inst)
             .expect("failed to insert math instruction");
         math_inst
+    }
+
+    /// Check if a value is loop-invariant
+    fn is_loop_invariant(&self, val: Value, loop_info: &LoopInfo) -> bool {
+        let val_data = self.func.dfg().value(val);
+        match val_data.kind() {
+            ValueKind::Integer(_)
+            | ValueKind::Undef(_)
+            | ValueKind::GlobalAlloc(_)
+            | ValueKind::FuncArgRef(_) => true, // Constants and global references are loop-invariant
+            _ => {
+                for (&bb, node) in self.func.layout().bbs() {
+                    if node.insts().contains_key(&val)
+                        || self.func.dfg().bb(bb).params().contains(&val)
+                    {
+                        // If the defining instruction or block argument is inside the loop, it's not invariant
+                        return !loop_info.blocks.contains(&bb);
+                    }
+                }
+                false
+            }
+        }
     }
 
     /// Replace old_val with new_val in a ValueKind
