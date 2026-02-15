@@ -2,6 +2,7 @@ use const_prop::ConstantPropagation;
 use dce::DeadCodeElimination;
 use gvn::GlobalValueNumbering;
 use koopa::ir::Program;
+use licm::LoopInvariantCodeMotion;
 use mem2reg::Mem2Reg;
 use side_effect::analyze_side_effects;
 
@@ -9,6 +10,8 @@ mod const_prop;
 mod dce;
 mod dom;
 mod gvn;
+mod licm;
+mod loop_analysis;
 mod mem2reg;
 mod side_effect;
 
@@ -46,6 +49,9 @@ pub fn optimize_program(program: &mut Program) {
             // Dead code elimination pass
             let mut dce = DeadCodeElimination::new(func_data, &side_effects);
             changed |= dce.run();
+            // Loop invariant code motion pass
+            let mut licm = LoopInvariantCodeMotion::new(func_data);
+            changed |= licm.run();
         }
     }
 }
