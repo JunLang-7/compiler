@@ -346,6 +346,23 @@ impl<'a> ConstantPropagation<'a> {
                         );
                 }
             }
+            ValueKind::Jump(jmp) => {
+                let new_args: Vec<Value> = jmp
+                    .args()
+                    .iter()
+                    .map(|&arg| {
+                        self.get_new_op(arg, replacements, existing_inst)
+                            .unwrap_or(arg)
+                    })
+                    .collect();
+                if new_args.iter().zip(jmp.args()).any(|(&n, &o)| n != o) {
+                    changed = true;
+                    self.func
+                        .dfg_mut()
+                        .replace_value_with(inst)
+                        .jump_with_args(jmp.target(), new_args);
+                }
+            }
             ValueKind::Call(call) => {
                 let new_args: Vec<Value> = call
                     .args()
