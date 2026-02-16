@@ -123,6 +123,31 @@ Global Value Numbering
 - **交换律支持**：对可交换操作进行规范化匹配。
 - **与 Phi 协同**：在 SSA 形式下识别等价表达式。
 
+### 循环不变量外提（LICM）
+Loop-Invariant Code Motion
+
+将循环内不变的计算提升到循环外：
+- **循环识别**：基于支配树与回边分析识别自然循环。
+- **不变量检测**：识别循环内不依赖循环变量的计算。
+- **Preheader 插入**：为循环创建前驱块，安全外提不变指令。
+- **支配性检查**：确保被外提的指令支配所有循环出口，保证语义正确。
+- **副作用分析**：结合全局副作用分析，避免外提有副作用的操作。
+
+### 归纳变量优化（IVO）
+Induction Variable Optimization
+
+识别并优化循环中的归纳变量：
+- **基本归纳变量（BIV）识别**：分析循环 header 的块参数，识别形如 `i = i + step` 的基本归纳变量。
+- **派生归纳变量（DIV）识别**：检测循环内形如 `offset = i * k` 或 `i << shift` 的派生归纳变量。
+- **强度削减（Strength Reduction）**：
+  - 将循环内的乘法 `i * k` 替换为增量加法 `offset = offset + step * k`
+  - 为派生变量创建新的块参数，在 preheader 初始化，在 latch 更新
+  - 消除循环体内的昂贵乘法/移位操作
+- **线性测试替换（Linear Test Replacement / IVE）**：
+  - 当循环条件涉及 BIV 时（如 `i < 100`），将其改写为派生变量的条件（如 `offset < 400`）
+  - 删除不再使用的原 BIV 参数及其更新指令
+  - 实现完整的归纳变量消除，减少循环开销
+
 ## 构建与运行
 
 ### Docker 环境 (推荐)
@@ -201,6 +226,9 @@ cargo run -- -riscv hello.c -o hello.S
 │   │       ├── dce.rs          # 死代码消除
 │   │       ├── dom.rs          # 支配关系分析
 │   │       ├── gvn.rs          # 全局值编号
+│   │       ├── licm.rs         # 循环不变量外提
+│   │       ├── ivo.rs          # 归纳变量优化
+│   │       ├── loop_analysis.rs # 循环分析
 │   │       ├── mem2reg.rs      # SSA 转换
 │   │       ├── mod.rs          # 优化模块入口
 │   │       └── side_effect.rs  # 副作用分析
