@@ -1,6 +1,9 @@
 /// Dead Code Elimination Pass
 use super::side_effect::is_global_or_param;
-use koopa::ir::{BasicBlock, Function, FunctionData, Value, ValueKind};
+use koopa::ir::{
+    BasicBlock, Function, FunctionData, Value, ValueKind,
+    builder::{LocalInstBuilder, ValueBuilder},
+};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub struct DeadCodeElimination<'a> {
@@ -249,8 +252,139 @@ impl<'a> DeadCodeElimination<'a> {
             }
         }
 
+        // remove dead block arguments after removing instructions
+        changed |= self.remove_dead_block_args();
+
         // Note: If we hit max_iterations, there may be cyclic dead code that we cannot remove
         // This is acceptable - such code won't be executed and won't affect correctness
+
+        changed
+    }
+
+    fn remove_dead_block_args(&mut self) -> bool {
+        let mut changed = false;
+        let bbs: Vec<BasicBlock> = self.func.layout().bbs().keys().cloned().collect();
+
+        for bb in bbs {
+            let params = self.func.dfg().bb(bb).params().to_vec();
+
+            let mut dead_indices = Vec::new();
+            // 找出所有没有被使用的参数的索引
+            // 为了安全删除，我们要从后往前删，避免索引偏移
+            for (idx, &param) in params.iter().enumerate().rev() {
+                if self.func.dfg().value(param).used_by().is_empty() {
+                    dead_indices.push(idx);
+                }
+            }
+
+            if dead_indices.is_empty() {
+                continue;
+            }
+
+            changed = true;
+
+            dead_indices.sort_unstable_by(|a, b| b.cmp(a));
+
+            // 从当前 BB 的参数列表中移除
+            let mut new_params = params.clone();
+            for &idx in &dead_indices {
+                let param_to_remove = new_params.remove(idx);
+                self.func.dfg_mut().remove_value(param_to_remove);
+            }
+
+            // 重新设置 bb 的参数
+            self.func.dfg_mut().bb_mut(bb).params_mut().clear();
+            self.func
+                .dfg_mut()
+                .bb_mut(bb)
+                .params_mut()
+                .extend(new_params);
+
+            // 修正剩下活着的 BlockArgRef 的内部索引
+            let alive_params = self.func.dfg().bb(bb).params().to_vec();
+            for (new_idx, &alive_param) in alive_params.iter().enumerate() {
+                let mut data = self.func.dfg().value(alive_param).clone();
+                if let ValueKind::BlockArgRef(arg) = data.kind_mut() {
+                    *arg.index_mut() = new_idx;
+                }
+                self.func
+                    .dfg_mut()
+                    .replace_value_with(alive_param)
+                    .raw(data);
+            }
+
+            // 修改所有前驱的 Jump/Branch 指令，删掉对应的实参
+            let all_bbs: Vec<BasicBlock> = self.func.layout().bbs().keys().cloned().collect();
+            for pre_bb in all_bbs {
+                let term = *self
+                    .func
+                    .layout()
+                    .bbs()
+                    .node(&pre_bb)
+                    .unwrap()
+                    .insts()
+                    .back_key()
+                    .unwrap();
+                let term_data = self.func.dfg().value(term).clone();
+                match term_data.kind() {
+                    ValueKind::Jump(jmp) => {
+                        if jmp.target() != bb {
+                            continue;
+                        }
+                        let mut new_args = jmp.args().to_vec();
+                        for &idx in &dead_indices {
+                            if idx < new_args.len() {
+                                new_args.remove(idx);
+                            }
+                        }
+                        self.func
+                            .dfg_mut()
+                            .replace_value_with(term)
+                            .jump_with_args(jmp.target(), new_args);
+                    }
+                    ValueKind::Branch(br) => {
+                        let cond = br.cond();
+                        let true_bb = br.true_bb();
+                        let false_bb = br.false_bb();
+                        let mut t_args = br.true_args().to_vec();
+                        let mut f_args = br.false_args().to_vec();
+                        let mut modified = false;
+
+                        if true_bb == bb {
+                            for &idx in &dead_indices {
+                                if idx < t_args.len() {
+                                    t_args.remove(idx);
+                                }
+                            }
+                            modified = true;
+                        }
+                        if false_bb == bb {
+                            for &idx in &dead_indices {
+                                if idx < f_args.len() {
+                                    f_args.remove(idx);
+                                }
+                            }
+                            modified = true;
+                        }
+                        if !modified {
+                            continue;
+                        }
+                        if true_bb == false_bb {
+                            self.func
+                                .dfg_mut()
+                                .replace_value_with(term)
+                                .jump_with_args(true_bb, t_args);
+                        } else {
+                            self.func
+                                .dfg_mut()
+                                .replace_value_with(term)
+                                .branch_with_args(cond, true_bb, false_bb, t_args, f_args);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         changed
     }
